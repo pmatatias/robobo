@@ -79,8 +79,41 @@ connectToMongo().catch((err) => {
  */
 app.get("/api/agent-id", async (req, res) => {
   try {
-    const assistants = await assistantsCollection.find({}).toArray();
+    const assistants = await assistantsCollection.find({ disabled: { $ne: true } }).toArray();
     res.json(assistants.map(({ name, slug, agent_id }) => ({ name, slug, agent_id })));
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/admin/agent-id:
+ *   get:
+ *     summary: List all assistants including disabled ones (for admin purposes)
+ *     responses:
+ *       200:
+ *         description: Array of all assistants
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   name:
+ *                     type: string
+ *                   slug:
+ *                     type: string
+ *                   agent_id:
+ *                     type: string
+ *                   disabled:
+ *                     type: boolean
+ */
+app.get("/api/admin/agent-id", async (req, res) => {
+  try {
+    const assistants = await assistantsCollection.find({}).toArray();
+    res.json(assistants.map(({ name, slug, agent_id, disabled }) => ({ name, slug, agent_id, disabled: !!disabled })));
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
@@ -118,6 +151,9 @@ app.get("/api/agent-id/:slug", async (req, res) => {
     const assistant = await assistantsCollection.findOne({ slug });
     if (!assistant) {
       return res.status(404).json({ error: "Assistant not found" });
+    }
+    if (assistant.disabled) {
+      return res.status(403).json({ error: "Assistant disabled" });
     }
     res.json({
       agent_id: assistant.agent_id,
@@ -157,7 +193,7 @@ app.get("/api/agent-id/:slug", async (req, res) => {
  *         description: Assistant with this slug already exists
  */
 app.post("/api/agent-id", async (req, res) => {
-  const { name, slug, agent_id } = req.body;
+  const { name, slug, agent_id, disabled } = req.body;
   if (!name || !slug || !agent_id) {
     return res.status(400).json({ error: "Missing required fields: name, slug, agent_id" });
   }
@@ -167,7 +203,7 @@ app.post("/api/agent-id", async (req, res) => {
     if (exists) {
       return res.status(409).json({ error: "Assistant with this slug already exists" });
     }
-    const result = await assistantsCollection.insertOne({ name, slug, agent_id });
+    const result = await assistantsCollection.insertOne({ name, slug, agent_id, disabled: !!disabled });
     res.status(201).json({ message: "Assistant created", id: result.insertedId });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
@@ -204,20 +240,24 @@ app.post("/api/agent-id", async (req, res) => {
  */
 app.put("/api/agent-id/:slug", async (req, res) => {
   const { slug } = req.params;
-  const { name, agent_id } = req.body;
-  if (!name && !agent_id) {
-    return res.status(400).json({ error: "At least one of name or agent_id must be provided" });
+  const { name, agent_id, disabled } = req.body;
+  if (!name && !agent_id && typeof disabled === "undefined") {
+    return res.status(400).json({ error: "At least one of name, agent_id, or disabled must be provided" });
   }
   try {
     const update = {};
     if (name) update.name = name;
     if (agent_id) update.agent_id = agent_id;
+    if (typeof disabled !== "undefined") update.disabled = !!disabled;
     const result = await assistantsCollection.updateOne(
       { slug },
       { $set: update }
     );
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: "Assistant not found" });
+    }
+    if (typeof disabled !== "undefined" && !!disabled === true) {
+      return res.json({ message: "Assistant disabled" });
     }
     res.json({ message: "Assistant updated" });
   } catch (err) {
