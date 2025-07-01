@@ -312,7 +312,7 @@ async function generateTicketNumber() {
 
 
 app.post("/webhook/ticket", async (req, res) => {
-  const { subject, description, priority, customer_name } = req.body;
+  const { subject, description, priority, customer_name, agent_id } = req.body;
   if (!subject) {
     return res.status(400).json({ error: "Missing required field: subject" });
   }
@@ -324,6 +324,7 @@ app.post("/webhook/ticket", async (req, res) => {
       description: description || "",
       priority: priority || "normal",
       customer_name: customer_name || "",
+      agent_id: agent_id || "",
       created_at: new Date()
     };
     const result = await ticketsCollection.insertOne(ticket);
@@ -339,12 +340,14 @@ app.post("/webhook/ticket", async (req, res) => {
  * Returns: ticket status and details
  */
 app.post("/webhook/ticket/status", async (req, res) => {
-  const { ticket_number } = req.body;
+  const { ticket_number, agent_id } = req.body;
   if (!ticket_number) {
     return res.status(400).json({ error: "Missing required field: ticket_number" });
   }
   try {
-    const ticket = await ticketsCollection.findOne({ ticket_number });
+    const query = { ticket_number };
+    if (agent_id) query.agent_id = agent_id;
+    const ticket = await ticketsCollection.findOne(query);
     if (!ticket) {
       return res.status(404).json({ error: "Ticket not found" });
     }
@@ -355,6 +358,7 @@ app.post("/webhook/ticket/status", async (req, res) => {
       description: ticket.description,
       priority: ticket.priority,
       customer_name: ticket.customer_name,
+      agent_id: ticket.agent_id || "",
       created_at: ticket.created_at
     });
   } catch (err) {
@@ -368,19 +372,21 @@ app.post("/webhook/ticket/status", async (req, res) => {
  * Updates ticket status
  */
 app.post("/webhook/ticket/update-status", async (req, res) => {
-  const { ticket_number, status } = req.body;
+  const { ticket_number, agent_id, status } = req.body;
   if (!ticket_number || !status) {
     return res.status(400).json({ error: "Missing required fields: ticket_number, status" });
   }
   try {
+    const query = { ticket_number };
+    if (agent_id) query.agent_id = agent_id;
     const result = await ticketsCollection.updateOne(
-      { ticket_number },
+      query,
       { $set: { status } }
     );
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: "Ticket not found" });
     }
-    res.json({ message: "Ticket status updated", ticket_number, status });
+    res.json({ message: "Ticket status updated", ticket_number, agent_id: agent_id || "", status });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
