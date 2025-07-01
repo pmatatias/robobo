@@ -381,7 +381,7 @@ app.post("/webhook/ticket/update-status", async (req, res) => {
     if (agent_id) query.agent_id = agent_id;
     const result = await ticketsCollection.updateOne(
       query,
-      { $set: { status } }
+      { $set: { status, updated_at: new Date() } }
     );
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: "Ticket not found" });
