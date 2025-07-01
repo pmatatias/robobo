@@ -40,14 +40,18 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://<username>:<passwo
 const DB_NAME = process.env.DB_NAME || "robocall_db";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "assistants";
 
-let db, assistantsCollection;
+let db, assistantsCollection, ticketsCollection;
 
-// Connect to MongoDB once at startup
+/**
+ * Connect to MongoDB once at startup
+ * Also set up the tickets collection
+ */
 async function connectToMongo() {
   const client = new MongoClient(MONGODB_URI);
   await client.connect();
   db = client.db(DB_NAME);
   assistantsCollection = db.collection(COLLECTION_NAME);
+  ticketsCollection = db.collection("tickets");
   console.log("Connected to MongoDB");
 }
 connectToMongo().catch((err) => {
@@ -260,6 +264,123 @@ app.put("/api/agent-id/:slug", async (req, res) => {
       return res.json({ message: "Assistant disabled" });
     }
     res.json({ message: "Assistant updated" });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * @openapi
+ * /webhook/ticket:
+ *   post:
+ *     summary: Webhook to create a new ticket
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               subject:
+ *                 type: string
+ *               description:
+ *                 type: string
+ *               [other fields as needed]:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Ticket created
+ *       400:
+ *         description: Invalid input
+ *       500:
+ *         description: Server error
+ */
+/**
+ * Generate a unique 6-character alphanumeric ticket number (uppercase letters and digits)
+ */
+async function generateTicketNumber() {
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+  let ticket_number, exists, tries = 0, maxTries = 5;
+  do {
+    ticket_number = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    exists = await ticketsCollection.findOne({ ticket_number });
+    tries++;
+  } while (exists && tries < maxTries);
+  if (exists) throw new Error("Failed to generate unique ticket number");
+  return ticket_number;
+}
+
+
+app.post("/webhook/ticket", async (req, res) => {
+  const { subject, description, priority, customer_name } = req.body;
+  if (!subject) {
+    return res.status(400).json({ error: "Missing required field: subject" });
+  }
+  try {
+    const ticket_number = await generateTicketNumber();
+    const ticket = {
+      ticket_number,
+      subject,
+      description: description || "",
+      priority: priority || "normal",
+      customer_name: customer_name || "",
+      created_at: new Date()
+    };
+    const result = await ticketsCollection.insertOne(ticket);
+    res.status(201).json({ message: "Ticket created", ticket_number, id: result.insertedId });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * POST /webhook/ticket/status
+ * Body: { ticket_number: string }
+ * Returns: ticket status and details
+ */
+app.post("/webhook/ticket/status", async (req, res) => {
+  const { ticket_number } = req.body;
+  if (!ticket_number) {
+    return res.status(400).json({ error: "Missing required field: ticket_number" });
+  }
+  try {
+    const ticket = await ticketsCollection.findOne({ ticket_number });
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.json({
+      ticket_number: ticket.ticket_number,
+      status: ticket.status || "open",
+      subject: ticket.subject,
+      description: ticket.description,
+      priority: ticket.priority,
+      customer_name: ticket.customer_name,
+      created_at: ticket.created_at
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * POST /webhook/ticket/update-status
+ * Body: { ticket_number: string, status: string }
+ * Updates ticket status
+ */
+app.post("/webhook/ticket/update-status", async (req, res) => {
+  const { ticket_number, status } = req.body;
+  if (!ticket_number || !status) {
+    return res.status(400).json({ error: "Missing required fields: ticket_number, status" });
+  }
+  try {
+    const result = await ticketsCollection.updateOne(
+      { ticket_number },
+      { $set: { status } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.json({ message: "Ticket status updated", ticket_number, status });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
