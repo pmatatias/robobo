@@ -310,6 +310,7 @@ async function generateTicketNumber() {
   return ticket_number;
 }
 
+
 app.post("/webhook/ticket", async (req, res) => {
   const { subject, description, priority, customer_name } = req.body;
   if (!subject) {
@@ -327,6 +328,59 @@ app.post("/webhook/ticket", async (req, res) => {
     };
     const result = await ticketsCollection.insertOne(ticket);
     res.status(201).json({ message: "Ticket created", ticket_number, id: result.insertedId });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * POST /webhook/ticket/status
+ * Body: { ticket_number: string }
+ * Returns: ticket status and details
+ */
+app.post("/webhook/ticket/status", async (req, res) => {
+  const { ticket_number } = req.body;
+  if (!ticket_number) {
+    return res.status(400).json({ error: "Missing required field: ticket_number" });
+  }
+  try {
+    const ticket = await ticketsCollection.findOne({ ticket_number });
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.json({
+      ticket_number: ticket.ticket_number,
+      status: ticket.status || "open",
+      subject: ticket.subject,
+      description: ticket.description,
+      priority: ticket.priority,
+      customer_name: ticket.customer_name,
+      created_at: ticket.created_at
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * POST /webhook/ticket/update-status
+ * Body: { ticket_number: string, status: string }
+ * Updates ticket status
+ */
+app.post("/webhook/ticket/update-status", async (req, res) => {
+  const { ticket_number, status } = req.body;
+  if (!ticket_number || !status) {
+    return res.status(400).json({ error: "Missing required fields: ticket_number, status" });
+  }
+  try {
+    const result = await ticketsCollection.updateOne(
+      { ticket_number },
+      { $set: { status } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.json({ message: "Ticket status updated", ticket_number, status });
   } catch (err) {
     res.status(500).json({ error: "Server error" });
   }
