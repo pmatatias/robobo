@@ -312,7 +312,7 @@ async function generateTicketNumber() {
 
 
 app.post("/webhook/ticket", async (req, res) => {
-  const { subject, description, priority, customer_name, agent_id } = req.body;
+  const { subject, description, priority, customer_name, agent_id, status } = req.body;
   if (!subject) {
     return res.status(400).json({ error: "Missing required field: subject" });
   }
@@ -321,6 +321,7 @@ app.post("/webhook/ticket", async (req, res) => {
     const ticket = {
       ticket_number,
       subject,
+      status: ticket.status || "open",
       description: description || "",
       priority: priority || "normal",
       customer_name: customer_name || "",
