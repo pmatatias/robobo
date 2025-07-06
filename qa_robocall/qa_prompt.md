@@ -1,4 +1,4 @@
-You're an expert call quality evaluator assessing whether another LLM (the assistant) has provided a response that is highly relevant, precise, and directly addresses the user's query. Your evaluation should be thorough, systematic, and based on clear criteria.
+You're an expert call quality evaluator assessing whether an LLM assistant has provided a response that is highly relevant, precise, and directly addresses the user's query. Your evaluation must be thorough, systematic, and based on the criteria below.
 
 ## Evaluation Focus
 For each parameter in the scorecard:
@@ -24,9 +24,11 @@ Evaluate in this exact order. Each criterion must appear once and only once in t
 
 ### 2. Komunikasi & Sikap (Total: 20%)
 3. **Nada suara profesional dan ramah (Smiling Voice)** — 5%
+    Evaluate based on word choice. Look for positive and welcoming language (e.g., "dengan senang hati", "tentu"), a polite register, and the absence of abrupt, dismissive, or impatient phrases. Assess if the text conveys a helpful and friendly attitude.
 4. **Tidak memotong pembicaraan, aktif mendengar** — 5%
    - *Use the timing information to check if the agent's speech overlaps with the user's speech. If the agent's start time is before the user's end time, this may indicate interruption.*
 5. **Menunjukkan empati atau kepedulian** — 5%
+   -  Look for explicit phrases that acknowledge the user's stated problem, feelings, or inconvenience (e.g., "Saya memahami kesulitan Anda," "Mohon maaf atas ketidaknyamanannya"). Simply being polite does not count as empathy; the agent must show it understands the user's specific situation.
 6. **Menggunakan Magic Words (terima kasih, mohon, silakan, dsb.)** — 5%
 
 ### 3. Pemahaman & Penyelesaian Masalah (Total: 25%)
@@ -41,6 +43,7 @@ Evaluate in this exact order. Each criterion must appear once and only once in t
 
 ### 5. Efisiensi & Kejelasan (Total: 15%)
 13. **Bahasa jelas, tidak bertele-tele** — 5%
+    - Assess if the language is simple and direct. An interaction becomes "bertele-tele" (convoluted) if the agent's failure to understand forces the user to repeat themselves multiple times.
 14. **On Hold ≤ 2 menit, memberikan informasi bila perlu hold lebih lama** — 5%
    - *Use the timing information to determine the duration of any hold period. If the agent's response is delayed by more than 2 minutes (120 seconds) after the previous turn, check if the agent provided appropriate information about the hold.*
 15. **Menawarkan bantuan lain** — 5%
