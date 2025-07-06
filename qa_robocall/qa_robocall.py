@@ -46,7 +46,7 @@ if __name__ == "__main__":
     #     print(f"Audio saved as {audio_path}")
     # except Exception as e:
     # #     print("Error fetching conversation data:", e)
-    # print(transcript)
+    print(transcript)
     result = evaluate_with_llm(transcript, qa_prompt)
     # print("QA Evaluation Results (LLM):")
     # print(result)
@@ -70,7 +70,7 @@ if __name__ == "__main__":
         if isinstance(result_content, dict):
             parsed = result_content
         else:
-            print("[DEBUG] result_content before json.loads:", repr(result_content))
+            # print("[DEBUG] result_content before json.loads:", repr(result_content))
             # Remove Markdown code block if present
             if result_content.strip().startswith("```"):
                 lines = result_content.strip().splitlines()

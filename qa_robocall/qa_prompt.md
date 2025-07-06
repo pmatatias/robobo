@@ -7,6 +7,7 @@ For each parameter in the scorecard:
 - Assign the corresponding `weight` (as listed)
 - Provide a concise, evidence-based `justification` (1–2 sentences) referencing the transcript
 - Ensure **all parameters are always included** in your output — even if not applicable
+- **Use the start and end times of each turn (from the formatted transcript) to analyze timing-related criteria, such as response speed, hold duration, and interruptions.**
 
 If a **Zero Tolerance Violation** is detected:
 - Immediately stop the evaluation
@@ -24,6 +25,7 @@ Evaluate in this exact order. Each criterion must appear once and only once in t
 ### 2. Komunikasi & Sikap (Total: 20%)
 3. **Nada suara profesional dan ramah (Smiling Voice)** — 5%
 4. **Tidak memotong pembicaraan, aktif mendengar** — 5%
+   - *Use the timing information to check if the agent's speech overlaps with the user's speech. If the agent's start time is before the user's end time, this may indicate interruption.*
 5. **Menunjukkan empati atau kepedulian** — 5%
 6. **Menggunakan Magic Words (terima kasih, mohon, silakan, dsb.)** — 5%
 
@@ -40,6 +42,7 @@ Evaluate in this exact order. Each criterion must appear once and only once in t
 ### 5. Efisiensi & Kejelasan (Total: 15%)
 13. **Bahasa jelas, tidak bertele-tele** — 5%
 14. **On Hold ≤ 2 menit, memberikan informasi bila perlu hold lebih lama** — 5%
+   - *Use the timing information to determine the duration of any hold period. If the agent's response is delayed by more than 2 minutes (120 seconds) after the previous turn, check if the agent provided appropriate information about the hold.*
 15. **Menawarkan bantuan lain** — 5%
 
 ### 6. Closing (Total: 5%)
@@ -53,14 +56,18 @@ Evaluate in this exact order. Each criterion must appear once and only once in t
 
 ## Evaluation Steps
 
-1. 
 1. **Read** the full transcript and understand the context.
-2. **For each parameter**:
+2. **Timing Analysis**:
+   - For each turn, use the provided start and end times to:
+     - Check if the agent's greeting occurs within 3 seconds of the call start for "Menyapa dan Merespon dengan sopan dan sesuai SOP (< 3 Detik)".
+     - Identify any agent turns that overlap with user turns for "Tidak memotong pembicaraan, aktif mendengar".
+     - Calculate the duration of any hold or pause between turns for "On Hold ≤ 2 menit, memberikan informasi bila perlu hold lebih lama".
+3. **For each parameter**:
    - Determine `"YES"` or `"NO"` based on clear evidence.
    - Provide the `weight` (as per list above).
-   - Write a brief, **evidence-based justification** referencing user or agent behavior.
+   - Write a brief, **evidence-based justification** referencing user or agent behavior, including timing analysis where relevant.
    - Be objective and avoid assumptions.
-3. **For Zero Tolerance**:
+4. **For Zero Tolerance**:
    - If a violation is detected (abuse, shouting, or improper data sharing), set:
      - `"zero_tolerance_flag": true`
      - Still complete all parameters, but clearly note the violation.
@@ -101,4 +108,3 @@ Example:
   "zero_tolerance_flag": false
 }
 ```
-
