@@ -23,7 +23,7 @@ with open(qa_prompt_path, "r", encoding="utf-8") as f:
     qa_prompt = f.read()
 
 def evaluate_with_llm(transcript, qa_prompt):
-    llm = ChatOpenAI()
+    llm = ChatOpenAI(model="gpt-4.1", temperature=0.7)
     transcript_text = "\n".join(transcript)
     prompt = qa_prompt + f"\n\nTranscript:\n{transcript_text}\n"
     response = llm.invoke(prompt)
@@ -70,6 +70,13 @@ if __name__ == "__main__":
         if isinstance(result_content, dict):
             parsed = result_content
         else:
+            print("[DEBUG] result_content before json.loads:", repr(result_content))
+            # Remove Markdown code block if present
+            if result_content.strip().startswith("```"):
+                lines = result_content.strip().splitlines()
+                # Remove the first line (```json or ```) and the last line (```)
+                if lines[0].startswith("```") and lines[-1].startswith("```"):
+                    result_content = "\n".join(lines[1:-1])
             parsed = json.loads(result_content)
         # Calculate total score with zero tolerance check
         if parsed.get("zero_tolerance_flag"):
