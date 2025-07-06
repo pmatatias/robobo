@@ -20,6 +20,7 @@ Evaluate in this exact order. Each criterion must appear once and only once in t
 
 ### 1. Opening & Verifikasi (Total: 15%)
 1. **Menyapa dan Merespon dengan sopan dan sesuai SOP (< 3 Detik)** — 5%
+   - This criterion measures the time to first response. Check the start time of the agent's very first turn. This start time must be less than 3 seconds. The end time of the greeting is not relevant for this specific criterion
 2. **Melakukan verifikasi data pelanggan dengan benar** — 10%
 
 ### 2. Komunikasi & Sikap (Total: 20%)
