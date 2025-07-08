@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 import swaggerUi from "swagger-ui-express";
 import swaggerJSDoc from "swagger-jsdoc";
 import cors from "cors";
+import crypto from "crypto";
+import bodyParser from "body-parser";
 
 dotenv.config();
 
@@ -40,11 +42,12 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://<username>:<passwo
 const DB_NAME = process.env.DB_NAME || "robocall_db";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "assistants";
 
-let db, assistantsCollection, ticketsCollection;
+let db, assistantsCollection, ticketsCollection, postcallTranscriptionsCollection;
 
 /**
  * Connect to MongoDB once at startup
  * Also set up the tickets collection
+ * Also set up the postcall transcriptions collection
  */
 async function connectToMongo() {
   const client = new MongoClient(MONGODB_URI);
@@ -52,6 +55,7 @@ async function connectToMongo() {
   db = client.db(DB_NAME);
   assistantsCollection = db.collection(COLLECTION_NAME);
   ticketsCollection = db.collection("tickets");
+  postcallTranscriptionsCollection = db.collection("postcall_transcriptions");
   console.log("Connected to MongoDB");
 }
 connectToMongo().catch((err) => {
@@ -443,6 +447,85 @@ app.post("/webhook/ticket/update-status", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
+/**
+ * @openapi
+ * /webhook/elevenlabs:
+ *   post:
+ *     summary: Receive ElevenLabs post_call_transcription webhook and store in DB
+ *     description: |
+ *       Receives ElevenLabs webhook events (post_call_transcription) and stores them in the database after validating HMAC signature.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *     responses:
+ *       200:
+ *         description: Webhook received and stored
+ *       401:
+ *         description: Invalid signature
+ *       403:
+ *         description: Request expired
+ *       400:
+ *         description: Invalid input
+ *       500:
+ *         description: Server error
+ */
+app.post(
+  "/webhook/elevenlabs/postcall",
+  bodyParser.raw({ type: "*/*" }),
+  async (req, res) => {
+    try {
+      const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
+      if (!secret) {
+        return res.status(500).json({ error: "Webhook secret not configured" });
+      }
+      const signatureHeader = req.headers["elevenlabs-signature"] || req.headers["ElevenLabs-Signature"] || req.headers["ELEVENLABS-SIGNATURE"];
+      if (!signatureHeader) {
+        return res.status(401).json({ error: "Missing signature header" });
+      }
+      const headers = signatureHeader.split(",");
+      const timestamp = headers.find((e) => e.startsWith("t="))?.substring(2);
+      const signature = headers.find((e) => e.startsWith("v0="));
+      if (!timestamp || !signature) {
+        return res.status(401).json({ error: "Invalid signature format" });
+      }
+      // Validate timestamp (30 min tolerance)
+      const reqTimestamp = Number(timestamp) * 1000;
+      const tolerance = Date.now() - 30 * 60 * 1000;
+      if (reqTimestamp < tolerance) {
+        return res.status(403).json({ error: "Request expired" });
+      }
+      // Validate HMAC
+      const bodyString = req.body.toString("utf-8");
+      const message = `${timestamp}.${bodyString}`;
+      const digest = "v0=" + crypto.createHmac("sha256", secret).update(message).digest("hex");
+      if (signature !== digest) {
+        return res.status(401).json({ error: "Invalid signature" });
+      }
+      // Parse JSON
+      let event;
+      try {
+        event = JSON.parse(bodyString);
+      } catch (e) {
+        return res.status(400).json({ error: "Invalid JSON" });
+      }
+      if (event.type !== "post_call_transcription") {
+        return res.status(200).json({ message: "Event type ignored" });
+      }
+      // Store in DB
+      await postcallTranscriptionsCollection.insertOne({
+        ...event,
+        received_at: new Date()
+      });
+      return res.status(200).json({ message: "Webhook received and stored" });
+    } catch (err) {
+      return res.status(500).json({ error: "Server error" });
+    }
+  }
+);
 
 // === Start server ===
 app.listen(PORT, () => {
