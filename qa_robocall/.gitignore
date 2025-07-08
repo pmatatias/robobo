@@ -1,0 +1,6 @@
+.venv
+
+*.mp3
+*.wav
+/dummy
+/records

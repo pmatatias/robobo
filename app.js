@@ -368,6 +368,57 @@ app.post("/webhook/ticket/status", async (req, res) => {
 });
 
 /**
+ * @openapi
+ * /api/tickets:
+ *   get:
+ *     summary: Get list of all tickets
+ *     parameters:
+ *       - in: query
+ *         name: agent_id
+ *         schema:
+ *           type: string
+ *         required: false
+ *         description: Filter tickets by agent_id
+ *     responses:
+ *       200:
+ *         description: Array of tickets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 type: object
+ *                 properties:
+ *                   ticket_number:
+ *                     type: string
+ *                   subject:
+ *                     type: string
+ *                   status:
+ *                     type: string
+ *                   description:
+ *                     type: string
+ *                   priority:
+ *                     type: string
+ *                   customer_name:
+ *                     type: string
+ *                   agent_id:
+ *                     type: string
+ *                   created_at:
+ *                     type: string
+ *                     format: date-time
+ */
+app.get("/api/tickets", async (req, res) => {
+  try {
+    const { agent_id } = req.query;
+    const query = agent_id ? { agent_id } : {};
+    const tickets = await ticketsCollection.find(query).toArray();
+    res.json(tickets);
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
  * POST /webhook/ticket/update-status
  * Body: { ticket_number: string, status: string }
  * Updates ticket status
