@@ -477,25 +477,32 @@ app.post(
   "/webhook/elevenlabs/postcall",
   bodyParser.raw({ type: "*/*" }),
   async (req, res) => {
+    // Debug: log entry and headers
+    console.log("POST /webhook/elevenlabs/postcall called");
+    console.log("Headers:", req.headers);
     try {
       const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
       if (!secret) {
+        console.error("Webhook secret not configured");
         return res.status(500).json({ error: "Webhook secret not configured" });
       }
       const signatureHeader = req.headers["elevenlabs-signature"] || req.headers["ElevenLabs-Signature"] || req.headers["ELEVENLABS-SIGNATURE"];
       if (!signatureHeader) {
+        console.error("Missing signature header");
         return res.status(401).json({ error: "Missing signature header" });
       }
       const headers = signatureHeader.split(",");
       const timestamp = headers.find((e) => e.startsWith("t="))?.substring(2);
       const signature = headers.find((e) => e.startsWith("v0="));
       if (!timestamp || !signature) {
+        console.error("Invalid signature format", signatureHeader);
         return res.status(401).json({ error: "Invalid signature format" });
       }
       // Validate timestamp (30 min tolerance)
       const reqTimestamp = Number(timestamp) * 1000;
       const tolerance = Date.now() - 30 * 60 * 1000;
       if (reqTimestamp < tolerance) {
+        console.error("Request expired", { reqTimestamp, tolerance });
         return res.status(403).json({ error: "Request expired" });
       }
       // Validate HMAC
@@ -503,6 +510,7 @@ app.post(
       const message = `${timestamp}.${bodyString}`;
       const digest = "v0=" + crypto.createHmac("sha256", secret).update(message).digest("hex");
       if (signature !== digest) {
+        console.error("Invalid signature", { signature, digest });
         return res.status(401).json({ error: "Invalid signature" });
       }
       // Parse JSON
@@ -510,18 +518,23 @@ app.post(
       try {
         event = JSON.parse(bodyString);
       } catch (e) {
+        console.error("Invalid JSON", bodyString);
         return res.status(400).json({ error: "Invalid JSON" });
       }
+      console.log("Parsed event:", event);
       if (event.type !== "post_call_transcription") {
+        console.log("Event type ignored:", event.type);
         return res.status(200).json({ message: "Event type ignored" });
       }
       // Store in DB
-      await postcallTranscriptionsCollection.insertOne({
+      const dbResult = await postcallTranscriptionsCollection.insertOne({
         ...event,
         received_at: new Date()
       });
+      console.log("Inserted into DB:", dbResult.insertedId);
       return res.status(200).json({ message: "Webhook received and stored" });
     } catch (err) {
+      console.error("Error in webhook handler:", err);
       return res.status(500).json({ error: "Server error" });
     }
   }
