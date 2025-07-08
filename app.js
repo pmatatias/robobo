@@ -34,9 +34,6 @@ const swaggerOptions = {
 const swaggerSpec = swaggerJSDoc(swaggerOptions);
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
-// Middleware to parse JSON bodies
-app.use(express.json());
-
 // === MongoDB connection setup ===
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://<username>:<password>@<cluster-url>/<dbname>?retryWrites=true&w=majority";
 const DB_NAME = process.env.DB_NAME || "robocall_db";
@@ -200,7 +197,7 @@ app.get("/api/agent-id/:slug", async (req, res) => {
  *       409:
  *         description: Assistant with this slug already exists
  */
-app.post("/api/agent-id", async (req, res) => {
+app.post("/api/agent-id", express.json(), async (req, res) => {
   const { name, slug, agent_id, disabled } = req.body;
   if (!name || !slug || !agent_id) {
     return res.status(400).json({ error: "Missing required fields: name, slug, agent_id" });
@@ -246,7 +243,7 @@ app.post("/api/agent-id", async (req, res) => {
  *       404:
  *         description: Assistant not found
  */
-app.put("/api/agent-id/:slug", async (req, res) => {
+app.put("/api/agent-id/:slug", express.json(), async (req, res) => {
   const { slug } = req.params;
   const { name, agent_id, disabled } = req.body;
   if (!name && !agent_id && typeof disabled === "undefined") {
@@ -315,7 +312,7 @@ async function generateTicketNumber() {
 }
 
 
-app.post("/webhook/ticket", async (req, res) => {
+app.post("/webhook/ticket", express.json(), async (req, res) => {
   const { subject, description, priority, customer_name, agent_id, status } = req.body;
   if (!subject) {
     return res.status(400).json({ error: "Missing required field: subject" });
@@ -344,7 +341,7 @@ app.post("/webhook/ticket", async (req, res) => {
  * Body: { ticket_number: string }
  * Returns: ticket status and details
  */
-app.post("/webhook/ticket/status", async (req, res) => {
+app.post("/webhook/ticket/status", express.json(), async (req, res) => {
   const { ticket_number, agent_id } = req.body;
   if (!ticket_number) {
     return res.status(400).json({ error: "Missing required field: ticket_number" });
@@ -427,7 +424,7 @@ app.get("/api/tickets", async (req, res) => {
  * Body: { ticket_number: string, status: string }
  * Updates ticket status
  */
-app.post("/webhook/ticket/update-status", async (req, res) => {
+app.post("/webhook/ticket/update-status", express.json(), async (req, res) => {
   const { ticket_number, agent_id, status } = req.body;
   if (!ticket_number || !status) {
     return res.status(400).json({ error: "Missing required fields: ticket_number, status" });
