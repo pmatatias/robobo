@@ -506,8 +506,14 @@ app.post(
         return res.status(403).json({ error: "Request expired" });
       }
       // Validate HMAC
+      // Log raw body and message for debugging
+      console.log("Raw body (hex):", req.body.toString("hex"));
       const bodyString = req.body.toString("utf-8");
+      console.log("Body as utf-8 string:", bodyString);
       const message = `${timestamp}.${bodyString}`;
+      console.log("HMAC message:", message);
+      // Masked secret info for debugging
+      console.log("Secret info: length =", secret.length, "first char =", secret[0], "last char =", secret[secret.length-1]);
       const digest = "v0=" + crypto.createHmac("sha256", secret).update(message).digest("hex");
       if (signature !== digest) {
         console.error("Invalid signature", { signature, digest });
