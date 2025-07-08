@@ -528,8 +528,10 @@ app.post(
         return res.status(400).json({ error: "Invalid JSON" });
       }
       console.log("Parsed event:", event);
+      // Only store post_call_transcription events in MongoDB.
       if (event.type !== "post_call_transcription") {
-        console.log("Event type ignored:", event.type);
+        // Per ElevenLabs docs: always return 200 for valid, authenticated requests, even if event type is ignored.
+        console.log("Webhook event type ignored (not post_call_transcription):", event.type);
         return res.status(200).json({ message: "Event type ignored" });
       }
       // Store in DB
@@ -537,7 +539,7 @@ app.post(
         ...event,
         received_at: new Date()
       });
-      console.log("Inserted into DB:", dbResult.insertedId);
+      console.log("Inserted post_call_transcription into DB:", dbResult.insertedId);
       return res.status(200).json({ message: "Webhook received and stored" });
     } catch (err) {
       console.error("Error in webhook handler:", err);
