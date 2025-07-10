@@ -39,12 +39,13 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://<username>:<passwo
 const DB_NAME = process.env.DB_NAME || "robocall_db";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "assistants";
 
-let db, assistantsCollection, ticketsCollection, postcallTranscriptionsCollection;
+let db, assistantsCollection, ticketsCollection, postcallTranscriptionsCollection, robocallTicketsCollection;
 
 /**
  * Connect to MongoDB once at startup
  * Also set up the tickets collection
  * Also set up the postcall transcriptions collection
+ * Also set up the robocall_tickets collection
  */
 async function connectToMongo() {
   const client = new MongoClient(MONGODB_URI);
@@ -53,6 +54,7 @@ async function connectToMongo() {
   assistantsCollection = db.collection(COLLECTION_NAME);
   ticketsCollection = db.collection("tickets");
   postcallTranscriptionsCollection = db.collection("postcall_transcriptions");
+  robocallTicketsCollection = db.collection("robocall_tickets");
   console.log("Connected to MongoDB");
 }
 connectToMongo().catch((err) => {
@@ -298,17 +300,26 @@ app.put("/api/agent-id/:slug", express.json(), async (req, res) => {
  */
 /**
  * Generate a unique 6-character alphanumeric ticket number (uppercase letters and digits)
+ * @param {Collection} collection - MongoDB collection to check for uniqueness
+ * @returns {Promise<string>} - Unique ticket number
  */
-async function generateTicketNumber() {
+async function generateUniqueTicketNumber(collection) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
   let ticket_number, exists, tries = 0, maxTries = 5;
   do {
     ticket_number = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
-    exists = await ticketsCollection.findOne({ ticket_number });
+    exists = await collection.findOne({ ticket_number });
     tries++;
   } while (exists && tries < maxTries);
   if (exists) throw new Error("Failed to generate unique ticket number");
   return ticket_number;
+}
+
+/**
+ * Generate a unique 6-character alphanumeric ticket number for ticketsCollection
+ */
+async function generateTicketNumber() {
+  return generateUniqueTicketNumber(ticketsCollection);
 }
 
 
@@ -470,6 +481,208 @@ app.post("/webhook/ticket/update-status", express.json(), async (req, res) => {
  *       500:
  *         description: Server error
  */
+/**
+ * Create a robocall ticket in robocall_tickets collection from an ElevenLabs event
+ * @param {object} event - The parsed ElevenLabs event (post_call_transcription)
+ * @returns {Promise<string>} The created ticket number
+ */
+async function create_robocall_ticket(event) {
+  // Extract analysis fields for top-level mapping (do not remove from analysis)
+  let subject = "", category = "", customer_name = "", priority = "low";
+  if (event.analysis && event.analysis.data_collection_results) {
+    const dcr = event.analysis.data_collection_results;
+    subject = dcr.subject?.value || "";
+    category = dcr.category?.value || "";
+    customer_name = dcr.customer_name?.value || "";
+    priority = dcr.priority?.value || "low";
+  }
+
+  // Build call_transcription object
+  const now = new Date();
+  const event_timestamp = event?.metadata?.start_time_unix_secs || event?.metadata?.accepted_time_unix_secs || Math.floor(Date.now() / 1000);
+  function cleanTranscript(transcript) {
+    if (!Array.isArray(transcript)) return [];
+    return transcript.map(turn => ({
+      role: turn.role,
+      message: turn.message,
+      time_in_call_secs: turn.time_in_call_secs,
+      interrupted: turn.interrupted
+    }));
+  }
+  const call_transcription = {
+    event_timestamp,
+    data: {
+      agent_id: event.agent_id,
+      conversation_id: event.conversation_id,
+      status: event.status,
+      user_id: event.user_id,
+      transcript: cleanTranscript(event.transcript),
+      metadata: event.metadata,
+      analysis: event.analysis,
+      received_at: now
+    }
+  };
+
+  // Check for existing ticket with same agent_id and conversation_id
+  const existing = await robocallTicketsCollection.findOne({
+    "call_transcription.data.agent_id": event.agent_id,
+    "call_transcription.data.conversation_id": event.conversation_id
+  });
+
+  if (existing) {
+    // Update the existing ticket
+    const updateFields = {
+      subject,
+      category,
+      customer_name,
+      priority,
+      call_transcription,
+      ticket_status: "closed",
+      eval: null,
+      updated_at: now
+    };
+    await robocallTicketsCollection.updateOne(
+      { _id: existing._id },
+      { $set: updateFields }
+    );
+    console.log("Updated robocall ticket:", existing.ticket_number);
+    return existing.ticket_number;
+  } else {
+    // Generate unique ticket number for robocall_tickets
+    const ticket_number = await generateUniqueTicketNumber(robocallTicketsCollection);
+
+    const ticketDoc = {
+      ticket_number,
+      ticket_status: "closed",
+      subject,
+      category,
+      customer_name,
+      priority,
+      eval: null,
+      call_transcription
+    };
+    await robocallTicketsCollection.insertOne(ticketDoc);
+    console.log("Inserted robocall ticket:", ticket_number);
+    return ticket_number;
+  }
+}
+
+/**
+ * POST /webhook/robocall-ticket/update-status
+ * Body: { ticket_number: string, ticket_status: string }
+ * Updates ticket_status for a robocall ticket
+ */
+app.post("/webhook/robocall-ticket/update-status", express.json(), async (req, res) => {
+  const { ticket_number, ticket_status } = req.body;
+  if (!ticket_number || !ticket_status) {
+    return res.status(400).json({ error: "Missing required fields: ticket_number, ticket_status" });
+  }
+  try {
+    const result = await robocallTicketsCollection.updateOne(
+      { ticket_number },
+      { $set: { ticket_status, updated_at: new Date() } }
+    );
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.json({ message: "Ticket status updated", ticket_number, ticket_status });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * POST /webhook/robocall-ticket/status
+ * Body: { ticket_number: string }
+ * Returns: { ticket_number, ticket_status, subject }
+ */
+app.post("/webhook/robocall-ticket/status", express.json(), async (req, res) => {
+  const { ticket_number } = req.body;
+  if (!ticket_number) {
+    return res.status(400).json({ error: "Missing required field: ticket_number" });
+  }
+  try {
+    const ticket = await robocallTicketsCollection.findOne({ ticket_number });
+    if (!ticket) {
+      return res.status(404).json({ error: "Ticket not found" });
+    }
+    res.json({
+      ticket_number: ticket.ticket_number,
+      ticket_status: ticket.ticket_status || "open",
+      subject: ticket.subject || ""
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * POST /webhook/robocall-ticket
+ * Body: { subject, category, customer_name, priority, agent_id, conversation_id }
+ * Returns: { ticket_number, ticket_status, subject, ... }
+ */
+app.post("/webhook/robocall-ticket", express.json(), async (req, res) => {
+  const { subject, category, customer_name, priority, agent_id, conversation_id } = req.body;
+  if (!subject || !agent_id || !conversation_id) {
+    return res.status(400).json({ error: "Missing required fields: subject, agent_id, conversation_id" });
+  }
+  try {
+    // Generate unique ticket number
+    const ticket_number = await generateUniqueTicketNumber(robocallTicketsCollection);
+
+    // Minimal call_transcription object
+    const call_transcription = {
+      data: {
+        agent_id,
+        conversation_id
+      }
+    };
+
+    const ticketDoc = {
+      ticket_number,
+      ticket_status: "open",
+      subject,
+      category: category || "",
+      customer_name: customer_name || "",
+      priority: priority || "low",
+      call_transcription,
+      created_at: new Date()
+    };
+
+    await robocallTicketsCollection.insertOne(ticketDoc);
+    res.status(201).json({ message: "Ticket has been created with number:", ticket_number });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+/**
+ * GET /api/robocall-tickets
+ * Query param: agent_id (optional)
+ * Returns all tickets, or those matching call_transcription.data.agent_id
+ */
+app.get("/api/robocall-tickets", async (req, res) => {
+  try {
+    const { agent_id } = req.query;
+    let query = {};
+    if (agent_id) {
+      // Support both flat and nested ticket structures
+      query = {
+        $or: [
+          { "call_transcription.data.agent_id": agent_id },
+          { agent_id }
+        ]
+      };
+    }
+    const tickets = await robocallTicketsCollection.find(query).toArray();
+    res.json(tickets);
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+
 app.post(
   "/webhook/elevenlabs/postcall",
   bodyParser.raw({ type: "*/*" }),
@@ -537,6 +750,14 @@ app.post(
         received_at: new Date()
       });
       console.log("Inserted post_call_transcription into DB:", dbResult.insertedId);
+
+      // Also create a robocall ticket (log errors but don't block webhook)
+      try {
+        await create_robocall_ticket(event);
+      } catch (ticketErr) {
+        console.error("Failed to create robocall ticket:", ticketErr);
+      }
+
       return res.status(200).json({ message: "Webhook received and stored" });
     } catch (err) {
       console.error("Error in webhook handler:", err);

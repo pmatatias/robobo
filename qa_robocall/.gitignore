@@ -1,6 +1,6 @@
 .venv
-
 *.mp3
 *.wav
 /dummy
 /records
+__pycache__
