@@ -12,7 +12,7 @@ from elevenlabs_api import format_conversation_for_llm
 # Load transcript from dummy/convai_detail.json and format for LLM
 import pathlib
 
-dummy_path = pathlib.Path(__file__).parent / "dummy" / "convai_detail.json"
+dummy_path = pathlib.Path(__file__).parent / "dummy" / "convai_ticket.json"
 with open(dummy_path, "r", encoding="utf-8") as f:
     convai_data = json.load(f)
 transcript = format_conversation_for_llm(convai_data)
@@ -36,6 +36,8 @@ if __name__ == "__main__":
     # Example: fetch conversation detail and audio from ElevenLabs API
     conversation_id = "your_conversation_id"  # Replace with actual ID
 
+    
+
     # try:
     #     conv_detail = get_conversation_detail(conversation_id)
     #     print("Conversation Detail:", conv_detail)
@@ -47,6 +49,7 @@ if __name__ == "__main__":
     # except Exception as e:
     # #     print("Error fetching conversation data:", e)
     print(transcript)
+    
     result = evaluate_with_llm(transcript, qa_prompt)
     # print("QA Evaluation Results (LLM):")
     # print(result)

@@ -667,11 +667,17 @@ app.post("/webhook/robocall-ticket", express.json(), async (req, res) => {
   }
 });
 
+
+
+
+
 /**
  * GET /api/robocall-tickets
  * Query param: agent_id (optional)
  * Returns all tickets, or those matching call_transcription.data.agent_id
  */
+import { ObjectId } from "mongodb";
+
 app.get("/api/robocall-tickets", async (req, res) => {
   try {
     const { agent_id } = req.query;
@@ -691,6 +697,7 @@ app.get("/api/robocall-tickets", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+
 
 app.post(
   "/webhook/elevenlabs/postcall",
@@ -774,6 +781,31 @@ app.post(
     }
   }
 );
+
+
+/**
+ * GET /api/robocall-tickets/pending-eval
+ * Query: limit (default 100, max 1000), after_id (ObjectId as string)
+ * Returns a page of tickets where eval is null, sorted by _id ascending
+ */
+app.get("/api/robocall-tickets/pending-eval", async (req, res) => {
+  try {
+    let { limit } = req.query;
+    limit = Math.min(parseInt(limit) || 1000, 1000); // Default to 1000, max 1000
+    const query = { eval: null };
+    const tickets = await robocallTicketsCollection
+      .find(query)
+      .sort({ _id: 1 })
+      .limit(limit)
+      .toArray();
+    res.json({ tickets });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+
 
 // === Start server ===
 app.listen(PORT, () => {

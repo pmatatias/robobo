@@ -26,25 +26,51 @@ def get_conversation_audio(conversation_id, api_key=ELEVENLABS_API_KEY):
     response.raise_for_status()
     return response.content
 
-def format_conversation_for_llm(conv_detail):
+def format_conversation_for_llm(ticket_json):
     """
-    Format the conversation JSON into a list of strings for LLM input.
-    Each line: 'Agent [start: Xs, end: Ys]: ...' or 'User [start: Xs, end: Ys]: ...'
-    Includes timing information for each speech turn.
+    Format the conversation JSON into a dialogue-like list of strings for LLM input.
+    Each message is followed by its time range (mm:ss-mm:ss or mm:ss if start==end).
+    Appends [INTERRUPTED] to the time line if the turn was interrupted.
+    Blank line between turns.
     """
-    transcript = conv_detail.get("transcript", [])
+    def format_time(secs):
+        secs = int(round(secs or 0))
+        m, s = divmod(secs, 60)
+        h, m = divmod(m, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{s:02d}"
+        else:
+            return f"{m}:{s:02d}"
+
+    # Try new structure first
+    transcript = []
     call_duration = None
-    # Try to get call duration from metadata
-    if "metadata" in conv_detail and "call_duration_secs" in conv_detail["metadata"]:
-        call_duration = conv_detail["metadata"]["call_duration_secs"]
+
+    call_transcription = ticket_json.get("call_transcription", {})
+    data = call_transcription.get("data", {})
+    transcript = data.get("transcript", [])
+    metadata = data.get("metadata", {})
+    call_duration = metadata.get("call_duration_secs", None)
+
+    # Fallback: old structure (transcript at top level)
+    if not transcript and "transcript" in ticket_json:
+        transcript = ticket_json.get("transcript", [])
+        metadata = ticket_json.get("metadata", {})
+        call_duration = metadata.get("call_duration_secs", None)
+
+    if not transcript:
+        return []
 
     formatted = []
     for idx, turn in enumerate(transcript):
-        role = turn.get("role", "unknown").capitalize()
+        role = (turn.get("role") or "unknown").capitalize()
         message = turn.get("message", "")
+        if message is None or not str(message).strip():
+            continue  # Skip empty/null messages
         start = turn.get("time_in_call_secs", None)
+        interrupted = turn.get("interrupted", False)
 
-        # Try to use LLM timing if available (for agent turns)
+        # End time logic
         end = None
         metrics = None
         elapsed_time = None
@@ -58,20 +84,27 @@ def format_conversation_for_llm(conv_detail):
                 elapsed_time = metrics["convai_llm_service_ttf_sentence"]["elapsed_time"]
 
         if elapsed_time is not None and start is not None:
-            # Use LLM elapsed time for end
             end = round(start + elapsed_time, 3)
         else:
-            # Fallback: next turn's start, or call duration for last turn
             if idx + 1 < len(transcript):
                 next_start = transcript[idx + 1].get("time_in_call_secs", None)
                 end = next_start if next_start is not None else start
             else:
                 end = call_duration if call_duration is not None else start
 
-        # Fallback if start is None
         if start is None:
             start = 0
         if end is None:
             end = start
-        formatted.append(f"{role} [start: {start}s, end: {end}s]: {message}")
+
+        t_start = format_time(start)
+        t_end = format_time(end)
+        if start == end:
+            time_str = t_start
+        else:
+            time_str = f"{t_start}-{t_end}"
+        if interrupted:
+            time_str += " [INTERRUPTED]"
+        # Single line per turn, compact and LLM-friendly
+        formatted.append(f"[{role} {time_str}]: {message}")
     return formatted
