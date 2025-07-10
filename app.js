@@ -870,9 +870,14 @@ app.post(
           const qaPayload = {
             _id: { "$oid": createdTicket._id.toHexString() },
             ticket_number: createdTicket.ticket_number,
+            ticket_status: createdTicket.ticket_status || "closed",
+            subject: createdTicket.subject || "",
+            category: createdTicket.category || "",
             customer_name: createdTicket.customer_name || "",
-            call_transcript: createdTicket.call_transcription?.data?.transcript || {},
-            status: createdTicket.ticket_status || "closed"
+            priority: createdTicket.priority || "low",
+            eval: createdTicket.eval || null,
+            call_transcription: createdTicket.call_transcription || {},
+            created_at: createdTicket.created_at || new Date()
           };
 
           const qaResponse = await fetch(qaRobocallUrl, {
