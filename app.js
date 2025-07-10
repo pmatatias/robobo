@@ -487,10 +487,13 @@ app.post("/webhook/ticket/update-status", express.json(), async (req, res) => {
  * @returns {Promise<string>} The created ticket number
  */
 async function create_robocall_ticket(event) {
+  // Support both top-level and .data wrapped event structure
+  const data = event.data || event;
+
   // Extract analysis fields for top-level mapping (do not remove from analysis)
   let subject = "", category = "", customer_name = "", priority = "low";
-  if (event.analysis && event.analysis.data_collection_results) {
-    const dcr = event.analysis.data_collection_results;
+  if (data.analysis && data.analysis.data_collection_results) {
+    const dcr = data.analysis.data_collection_results;
     subject = dcr.subject?.value || "";
     category = dcr.category?.value || "";
     customer_name = dcr.customer_name?.value || "";
@@ -499,7 +502,7 @@ async function create_robocall_ticket(event) {
 
   // Build call_transcription object
   const now = new Date();
-  const event_timestamp = event?.metadata?.start_time_unix_secs || event?.metadata?.accepted_time_unix_secs || Math.floor(Date.now() / 1000);
+  const event_timestamp = data?.metadata?.start_time_unix_secs || data?.metadata?.accepted_time_unix_secs || Math.floor(Date.now() / 1000);
   function cleanTranscript(transcript) {
     if (!Array.isArray(transcript)) return [];
     return transcript.map(turn => ({
@@ -512,21 +515,21 @@ async function create_robocall_ticket(event) {
   const call_transcription = {
     event_timestamp,
     data: {
-      agent_id: event.agent_id,
-      conversation_id: event.conversation_id,
-      status: event.status,
-      user_id: event.user_id,
-      transcript: cleanTranscript(event.transcript),
-      metadata: event.metadata,
-      analysis: event.analysis,
+      agent_id: data.agent_id,
+      conversation_id: data.conversation_id,
+      status: data.status,
+      user_id: data.user_id,
+      transcript: cleanTranscript(data.transcript),
+      metadata: data.metadata,
+      analysis: data.analysis,
       received_at: now
     }
   };
 
   // Check for existing ticket with same agent_id and conversation_id
   const existing = await robocallTicketsCollection.findOne({
-    "call_transcription.data.agent_id": event.agent_id,
-    "call_transcription.data.conversation_id": event.conversation_id
+    "call_transcription.data.agent_id": data.agent_id,
+    "call_transcription.data.conversation_id": data.conversation_id
   });
 
   if (existing) {
@@ -680,8 +683,6 @@ app.get("/api/robocall-tickets", async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
-
 
 app.post(
   "/webhook/elevenlabs/postcall",
