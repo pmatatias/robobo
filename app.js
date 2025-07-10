@@ -549,7 +549,7 @@ async function create_robocall_ticket(event) {
       { $set: updateFields }
     );
     console.log("Updated robocall ticket:", existing.ticket_number);
-    return existing.ticket_number;
+    return { ...existing, ...updateFields }; // Return the updated existing ticket
   } else {
     // Generate unique ticket number for robocall_tickets
     const ticket_number = await generateUniqueTicketNumber(robocallTicketsCollection);
@@ -562,11 +562,12 @@ async function create_robocall_ticket(event) {
       customer_name,
       priority,
       eval: null,
-      call_transcription
+      call_transcription,
+      created_at: now // Add created_at for new tickets
     };
-    await robocallTicketsCollection.insertOne(ticketDoc);
+    const result = await robocallTicketsCollection.insertOne(ticketDoc);
     console.log("Inserted robocall ticket:", ticket_number);
-    return ticket_number;
+    return { _id: result.insertedId, ...ticketDoc }; // Return the newly inserted ticket with its _id
   }
 }
 
@@ -680,7 +681,7 @@ import { ObjectId } from "mongodb";
 
 app.get("/api/robocall-tickets", async (req, res) => {
   try {
-    const { agent_id } = req.query;
+    let { agent_id } = req.query;
     let query = {};
     if (agent_id) {
       // Support both flat and nested ticket structures
@@ -695,6 +696,100 @@ app.get("/api/robocall-tickets", async (req, res) => {
     res.json(tickets);
   } catch (err) {
     res.status(500).json({ error: "Server error" });
+  }
+});
+
+
+/**
+ * @openapi
+ * /trigger_qa_robocall:
+ *   post:
+ *     summary: Triggers a QA robocall evaluation with provided ticket JSON data.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               _id:
+ *                 oneOf:
+ *                   - type: string
+ *                   - type: object
+ *                     properties:
+ *                       $oid:
+ *                         type: string
+ *                 description: The MongoDB ObjectId of the ticket.
+ *               ticket_number:
+ *                 type: string
+ *               customer_name:
+ *                 type: string
+ *               call_transcript:
+ *                 type: object
+ *               status:
+ *                 type: string
+ *             example:
+ *               _id: { "$oid": "65c7e2f1a1b2c3d4e5f6a7b8" }
+ *               ticket_number: "TICKET-001"
+ *               customer_name: "John Doe"
+ *               call_transcript: {}
+ *               status: "open"
+ *     responses:
+ *       200:
+ *         description: Ticket evaluated and updated successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                 message:
+ *                   type: string
+ *                 evaluation_result:
+ *                   type: object
+ *       400:
+ *         description: Invalid input.
+ *       500:
+ *         description: Server error.
+ */
+app.post("/trigger_qa_robocall", express.json(), async (req, res) => {
+  const ticketData = req.body;
+  if (!ticketData || !ticketData._id) {
+    return res.status(400).json({ error: "Missing required ticket data or _id" });
+  }
+
+  try {
+    const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
+    const response = await fetch(qaRobocallUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(ticketData),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`Failed to trigger QA robocall: ${response.status} - ${errorText}`);
+      return res.status(response.status).json({ error: `Failed to trigger QA robocall: ${errorText}` });
+    }
+
+    const result = await response.json();
+    console.log("QA robocall triggered successfully:", result);
+
+    // Update the robocall ticket with the evaluation result
+    const ticketId = typeof ticketData._id === 'string' ? new ObjectId(ticketData._id) : new ObjectId(ticketData._id.$oid);
+    await robocallTicketsCollection.updateOne(
+      { _id: ticketId },
+      { $set: { eval: result.evaluation_result, updated_at: new Date() } }
+    );
+    console.log(`Updated robocall ticket ${ticketData._id} with QA evaluation result.`);
+
+    res.status(200).json(result);
+  } catch (err) {
+    console.error("Error triggering QA robocall:", err);
+    res.status(500).json({ error: "Server error when triggering QA robocall" });
   }
 });
 
@@ -769,9 +864,41 @@ app.post(
 
       // Also create a robocall ticket (log errors but don't block webhook)
       try {
-        await create_robocall_ticket(event);
+        const createdTicket = await create_robocall_ticket(event); // Get the created ticket's full document
+        if (createdTicket && createdTicket._id) {
+          const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
+          const qaPayload = {
+            _id: { "$oid": createdTicket._id.toHexString() },
+            ticket_number: createdTicket.ticket_number,
+            customer_name: createdTicket.customer_name || "",
+            call_transcript: createdTicket.call_transcription?.data?.transcript || {},
+            status: createdTicket.ticket_status || "closed"
+          };
+
+          const qaResponse = await fetch(qaRobocallUrl, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(qaPayload),
+          });
+
+          if (qaResponse.ok) {
+            const qaResult = await qaResponse.json();
+            console.log("Successfully triggered QA robocall for ticket:", createdTicket.ticket_number, "Result:", qaResult);
+            // Update the robocall ticket with the evaluation result
+            await robocallTicketsCollection.updateOne(
+              { _id: createdTicket._id },
+              { $set: { eval: qaResult.evaluation_result, updated_at: new Date() } }
+            );
+            console.log(`Updated robocall ticket ${createdTicket.ticket_number} with QA evaluation result.`);
+          } else {
+            const errorText = await qaResponse.text();
+            console.error("Failed to trigger QA robocall for ticket:", createdTicket.ticket_number, "Error:", errorText);
+          }
+        }
       } catch (ticketErr) {
-        console.error("Failed to create robocall ticket:", ticketErr);
+        console.error("Failed to create or trigger QA robocall ticket:", ticketErr);
       }
 
       return res.status(200).json({ message: "Webhook received and stored" });
