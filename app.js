@@ -576,13 +576,18 @@ async function create_robocall_ticket(event) {
  * Updates ticket_status for a robocall ticket
  */
 app.post("/webhook/robocall-ticket/update-status", express.json(), async (req, res) => {
-  const { ticket_number, ticket_status } = req.body;
+  let { ticket_number, ticket_status, agent_id } = req.body;
   if (!ticket_number || !ticket_status) {
     return res.status(400).json({ error: "Missing required fields: ticket_number, ticket_status" });
   }
+  // Remove all spaces from ticket_number and agent_id (if present)
+  ticket_number = typeof ticket_number === "string" ? ticket_number.replace(/\s+/g, "") : ticket_number;
+  if (agent_id) agent_id = typeof agent_id === "string" ? agent_id.replace(/\s+/g, "") : agent_id;
   try {
+    const query = { ticket_number };
+    if (agent_id) query.agent_id = agent_id;
     const result = await robocallTicketsCollection.updateOne(
-      { ticket_number },
+      query,
       { $set: { ticket_status, updated_at: new Date() } }
     );
     if (result.matchedCount === 0) {
@@ -600,12 +605,17 @@ app.post("/webhook/robocall-ticket/update-status", express.json(), async (req, r
  * Returns: { ticket_number, ticket_status, subject }
  */
 app.post("/webhook/robocall-ticket/status", express.json(), async (req, res) => {
-  const { ticket_number } = req.body;
+  let { ticket_number, agent_id } = req.body;
   if (!ticket_number) {
     return res.status(400).json({ error: "Missing required field: ticket_number" });
   }
+  // Remove all spaces from ticket_number and agent_id (if present)
+  ticket_number = typeof ticket_number === "string" ? ticket_number.replace(/\s+/g, "") : ticket_number;
+  if (agent_id) agent_id = typeof agent_id === "string" ? agent_id.replace(/\s+/g, "") : agent_id;
   try {
-    const ticket = await robocallTicketsCollection.findOne({ ticket_number });
+    const query = { ticket_number };
+    if (agent_id) query.agent_id = agent_id;
+    const ticket = await robocallTicketsCollection.findOne(query);
     if (!ticket) {
       return res.status(404).json({ error: "Ticket not found" });
     }
