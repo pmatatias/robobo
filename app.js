@@ -391,6 +391,12 @@ app.post("/webhook/ticket/status", express.json(), async (req, res) => {
  *           type: string
  *         required: false
  *         description: Filter tickets by agent_id
+ *       - in: query
+ *         name: ticket_number
+ *         schema:
+ *           type: string
+ *         required: false
+ *         description: Filter tickets by ticket_number
  *     responses:
  *       200:
  *         description: Array of tickets
@@ -421,8 +427,14 @@ app.post("/webhook/ticket/status", express.json(), async (req, res) => {
  */
 app.get("/api/tickets", async (req, res) => {
   try {
-    const { agent_id } = req.query;
-    const query = agent_id ? { agent_id } : {};
+    const { agent_id, ticket_number } = req.query;
+    const query = {};
+    if (agent_id) {
+      query.agent_id = agent_id;
+    }
+    if (ticket_number) {
+      query.ticket_number = ticket_number;
+    }
     const tickets = await ticketsCollection.find(query).toArray();
     res.json(tickets);
   } catch (err) {
@@ -674,23 +686,24 @@ app.post("/webhook/robocall-ticket", express.json(), async (req, res) => {
 
 /**
  * GET /api/robocall-tickets
- * Query param: agent_id (optional)
- * Returns all tickets, or those matching call_transcription.data.agent_id
+ * Query param: agent_id (optional), ticket_number (optional)
+ * Returns all tickets, or those matching call_transcription.data.agent_id or ticket_number
  */
 import { ObjectId } from "mongodb";
 
 app.get("/api/robocall-tickets", async (req, res) => {
   try {
-    let { agent_id } = req.query;
+    let { agent_id, ticket_number } = req.query;
     let query = {};
     if (agent_id) {
       // Support both flat and nested ticket structures
-      query = {
-        $or: [
-          { "call_transcription.data.agent_id": agent_id },
-          { agent_id }
-        ]
-      };
+      query.$or = [
+        { "call_transcription.data.agent_id": agent_id },
+        { agent_id }
+      ];
+    }
+    if (ticket_number) {
+      query.ticket_number = ticket_number;
     }
     const tickets = await robocallTicketsCollection.find(query).toArray();
     res.json(tickets);
