@@ -1,13 +1,24 @@
 import express from "express";
 import { MongoClient } from "mongodb";
 import dotenv from "dotenv";
+import path from "path";
 import swaggerUi from "swagger-ui-express";
 import swaggerJSDoc from "swagger-jsdoc";
 import cors from "cors";
 import crypto from "crypto";
 import bodyParser from "body-parser";
+import COS from "cos-nodejs-sdk-v5";
 
+console.log("Loading .env from", path.resolve(".env"));
 dotenv.config();
+
+// === Tencent COS setup ===
+const cos = new COS({
+  SecretId: process.env.TENCENT_COS_SECRET_ID,
+  SecretKey: process.env.TENCENT_COS_SECRET_KEY,
+});
+const COS_BUCKET = process.env.TENCENT_COS_BUCKET; 
+const COS_REGION = process.env.TENCENT_COS_REGION; 
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,12 +50,12 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://<username>:<passwo
 const DB_NAME = process.env.DB_NAME || "robocall_db";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "assistants";
 
-let db, assistantsCollection, ticketsCollection, postcallTranscriptionsCollection, robocallTicketsCollection;
+let db, assistantsCollection, postcallCollection, robocallTicketsCollection;
 
 /**
  * Connect to MongoDB once at startup
  * Also set up the tickets collection
- * Also set up the postcall transcriptions collection
+ * Also set up the postcall collection
  * Also set up the robocall_tickets collection
  */
 async function connectToMongo() {
@@ -52,8 +63,7 @@ async function connectToMongo() {
   await client.connect();
   db = client.db(DB_NAME);
   assistantsCollection = db.collection(COLLECTION_NAME);
-  ticketsCollection = db.collection("tickets");
-  postcallTranscriptionsCollection = db.collection("postcall_transcriptions");
+  postcallCollection = db.collection("postcall");
   robocallTicketsCollection = db.collection("robocall_tickets");
   console.log("Connected to MongoDB");
 }
@@ -61,10 +71,6 @@ connectToMongo().catch((err) => {
   console.error("Failed to connect to MongoDB:", err);
   process.exit(1);
 });
-
-
-
-
 
 
 /**
@@ -109,19 +115,6 @@ async function generateUniqueTicketNumber(collection) {
   if (exists) throw new Error("Failed to generate unique ticket number");
   return ticket_number;
 }
-
-/**
- * Generate a unique 6-character alphanumeric ticket number for ticketsCollection
- */
-async function generateTicketNumber() {
-  return generateUniqueTicketNumber(ticketsCollection);
-}
-
-
-
-
-
-
 
 /**
  * @openapi
@@ -462,13 +455,32 @@ app.post("/trigger_qa_robocall", express.json(), async (req, res) => {
 });
 
 
+/**
+ * GET /api/robocall-tickets/pending-eval
+ * Query: limit (default 100, max 1000), after_id (ObjectId as string)
+ * Returns a page of tickets where eval is null, sorted by _id ascending
+ */
+app.get("/api/robocall-tickets/pending-eval", async (req, res) => {
+  try {
+    let { limit } = req.query;
+    limit = Math.min(parseInt(limit) || 1000, 1000); // Default to 1000, max 1000
+    const query = { eval: null };
+    const tickets = await robocallTicketsCollection
+      .find(query)
+      .sort({ _id: 1 })
+      .limit(limit)
+      .toArray();
+    res.json({ tickets });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 app.post(
   "/webhook/elevenlabs/postcall",
-  bodyParser.raw({ type: "*/*" }),
+  bodyParser.raw({ type: "application/json", limit: "20mb" }),
   async (req, res) => {
-    // Debug: log entry and headers
     console.log("POST /webhook/elevenlabs/postcall called");
-    console.log("Headers:", req.headers);
     try {
       const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
       if (!secret) {
@@ -497,10 +509,12 @@ app.post(
       // Validate HMAC
       // Log raw body and message for debugging
       console.log("Raw body (hex):", req.body.toString("hex"));
-      const bodyString = req.body.toString("utf-8");
-      console.log("Body as utf-8 string:", bodyString);
-      const message = `${timestamp}.${bodyString}`;
-      console.log("HMAC message:", message);
+      // Use raw buffer for HMAC calculation
+      const message = Buffer.concat([
+        Buffer.from(timestamp + ".", "utf-8"),
+        req.body
+      ]);
+      // console.log("HMAC message (buffer):", message);
       // Masked secret info for debugging
       console.log("Secret info: length =", secret.length, "first char =", secret[0], "last char =", secret[secret.length-1]);
       const digest = "v0=" + crypto.createHmac("sha256", secret).update(message).digest("hex");
@@ -511,99 +525,127 @@ app.post(
       // Parse JSON
       let event;
       try {
+        const bodyString = req.body.toString("utf-8");
         event = JSON.parse(bodyString);
       } catch (e) {
-        console.error("Invalid JSON", bodyString);
+        console.error("Invalid JSON", req.body.toString("utf-8"));
         return res.status(400).json({ error: "Invalid JSON" });
       }
       console.log("Parsed event:", event);
-      // Only store post_call_transcription events in MongoDB.
-      if (event.type !== "post_call_transcription") {
+
+      // Handle both post_call_transcription and post_call_audio
+      if (event.type === "post_call_transcription") {
+        // Store in DB
+        const dbResult = await postcallCollection.insertOne({
+          ...event,
+          received_at: new Date()
+        });
+        console.log("Inserted post_call_transcription into DB:", dbResult.insertedId);
+
+        // Also create a robocall ticket (log errors but don't block webhook)
+        try {
+          const createdTicket = await create_robocall_ticket(event); // Get the created ticket's full document
+          if (createdTicket && createdTicket._id) {
+            const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
+            const qaPayload = {
+              _id: { "$oid": createdTicket._id.toHexString() },
+              ticket_number: createdTicket.ticket_number,
+              ticket_status: createdTicket.ticket_status || "closed",
+              subject: createdTicket.subject || "",
+              category: createdTicket.category || "",
+              customer_name: createdTicket.customer_name || "",
+              priority: createdTicket.priority || "low",
+              eval: createdTicket.eval || null,
+              call_transcription: createdTicket.call_transcription || {},
+              created_at: createdTicket.created_at || new Date()
+            };
+
+            const qaResponse = await fetch(qaRobocallUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(qaPayload),
+            });
+
+            if (qaResponse.ok) {
+              const qaResult = await qaResponse.json();
+              console.log("Successfully triggered QA robocall for ticket:", createdTicket.ticket_number, "Result:", qaResult);
+              // Update the robocall ticket with the evaluation result
+              await robocallTicketsCollection.updateOne(
+                { _id: createdTicket._id },
+                { $set: { eval: qaResult.evaluation_result, updated_at: new Date() } }
+              );
+              console.log(`Updated robocall ticket ${createdTicket.ticket_number} with QA evaluation result.`);
+            } else {
+              const errorText = await qaResponse.text();
+              console.error("Failed to trigger QA robocall for ticket:", createdTicket.ticket_number, "Error:", errorText);
+            }
+          }
+        } catch (ticketErr) {
+          console.error("Failed to create or trigger QA robocall ticket:", ticketErr);
+        }
+
+        return res.status(200).json({ message: "post_call_transcription received and stored" });
+      } else if (event.type === "post_call_audio") {
+        // Handle audio: decode base64 and upload to COS
+        try {
+          const { agent_id, conversation_id, full_audio } = event.data || {};
+          const event_timestamp = event.event_timestamp;
+          if (!agent_id || !conversation_id || !full_audio) {
+            return res.status(400).json({ error: "Missing agent_id, conversation_id, or full_audio in post_call_audio" });
+          }
+          const audioBuffer = Buffer.from(full_audio, "base64");
+          const key = `audio-call/${agent_id}/${conversation_id}.mp3`;
+          cos.putObject(
+            {
+              Bucket: COS_BUCKET,
+              Region: COS_REGION,
+              Key: key,
+              Body: audioBuffer,
+              ContentType: "audio/mpeg",
+            },
+            async (err, data) => {
+              if (err) {
+                console.error("COS upload error:", err);
+                return res.status(500).json({ error: "Failed to upload audio to COS", details: err });
+              }
+              // Success
+              const fileUrl = `https://${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com/${key}`;
+              // Store metadata in MongoDB
+              try {
+                await postcallCollection.insertOne({
+                  type: "post_call_audio",
+                  event_timestamp,
+                  data: {
+                    agent_id,
+                    conversation_id,
+                    audio_url: fileUrl
+                  },
+                  received_at: new Date()
+                });
+              } catch (mongoErr) {
+                console.error("Failed to store post_call_audio metadata in MongoDB:", mongoErr);
+                // Still return success for audio upload, but log the DB error
+              }
+              res.status(200).json({ message: "Audio uploaded", url: fileUrl });
+            }
+          );
+        } catch (err) {
+          console.error("Error handling post_call_audio:", err);
+          return res.status(500).json({ error: "Server error handling post_call_audio" });
+        }
+      } else {
         // Per ElevenLabs docs: always return 200 for valid, authenticated requests, even if event type is ignored.
-        console.log("Webhook event type ignored (not post_call_transcription):", event.type);
+        console.log("Webhook event type ignored:", event.type);
         return res.status(200).json({ message: "Event type ignored" });
       }
-      // Store in DB
-      const dbResult = await postcallTranscriptionsCollection.insertOne({
-        ...event,
-        received_at: new Date()
-      });
-      console.log("Inserted post_call_transcription into DB:", dbResult.insertedId);
-
-      // Also create a robocall ticket (log errors but don't block webhook)
-      try {
-        const createdTicket = await create_robocall_ticket(event); // Get the created ticket's full document
-        if (createdTicket && createdTicket._id) {
-          const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
-          const qaPayload = {
-            _id: { "$oid": createdTicket._id.toHexString() },
-            ticket_number: createdTicket.ticket_number,
-            ticket_status: createdTicket.ticket_status || "closed",
-            subject: createdTicket.subject || "",
-            category: createdTicket.category || "",
-            customer_name: createdTicket.customer_name || "",
-            priority: createdTicket.priority || "low",
-            eval: createdTicket.eval || null,
-            call_transcription: createdTicket.call_transcription || {},
-            created_at: createdTicket.created_at || new Date()
-          };
-
-          const qaResponse = await fetch(qaRobocallUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(qaPayload),
-          });
-
-          if (qaResponse.ok) {
-            const qaResult = await qaResponse.json();
-            console.log("Successfully triggered QA robocall for ticket:", createdTicket.ticket_number, "Result:", qaResult);
-            // Update the robocall ticket with the evaluation result
-            await robocallTicketsCollection.updateOne(
-              { _id: createdTicket._id },
-              { $set: { eval: qaResult.evaluation_result, updated_at: new Date() } }
-            );
-            console.log(`Updated robocall ticket ${createdTicket.ticket_number} with QA evaluation result.`);
-          } else {
-            const errorText = await qaResponse.text();
-            console.error("Failed to trigger QA robocall for ticket:", createdTicket.ticket_number, "Error:", errorText);
-          }
-        }
-      } catch (ticketErr) {
-        console.error("Failed to create or trigger QA robocall ticket:", ticketErr);
-      }
-
-      return res.status(200).json({ message: "Webhook received and stored" });
     } catch (err) {
       console.error("Error in webhook handler:", err);
       return res.status(500).json({ error: "Server error" });
     }
   }
 );
-
-
-/**
- * GET /api/robocall-tickets/pending-eval
- * Query: limit (default 100, max 1000), after_id (ObjectId as string)
- * Returns a page of tickets where eval is null, sorted by _id ascending
- */
-app.get("/api/robocall-tickets/pending-eval", async (req, res) => {
-  try {
-    let { limit } = req.query;
-    limit = Math.min(parseInt(limit) || 1000, 1000); // Default to 1000, max 1000
-    const query = { eval: null };
-    const tickets = await robocallTicketsCollection
-      .find(query)
-      .sort({ _id: 1 })
-      .limit(limit)
-      .toArray();
-    res.json({ tickets });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
 
 
 
