@@ -8,6 +8,8 @@ import cors from "cors";
 import crypto from "crypto";
 import bodyParser from "body-parser";
 import COS from "cos-nodejs-sdk-v5";
+import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
 
 console.log("Loading .env from", path.resolve(".env"));
 dotenv.config();
@@ -421,6 +423,7 @@ app.post("/trigger_qa_robocall", express.json(), async (req, res) => {
   }
 
   try {
+    // const qaRobocallUrl = "https://1bbmxz17-8000.asse.devtunnels.ms/trigger_qa_robocall";
     const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
     const response = await fetch(qaRobocallUrl, {
       method: "POST",
@@ -546,41 +549,12 @@ app.post(
         try {
           const createdTicket = await create_robocall_ticket(event); // Get the created ticket's full document
           if (createdTicket && createdTicket._id) {
-            const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
-            const qaPayload = {
-              _id: { "$oid": createdTicket._id.toHexString() },
-              ticket_number: createdTicket.ticket_number,
-              ticket_status: createdTicket.ticket_status || "closed",
-              subject: createdTicket.subject || "",
-              category: createdTicket.category || "",
-              customer_name: createdTicket.customer_name || "",
-              priority: createdTicket.priority || "low",
-              eval: createdTicket.eval || null,
-              call_transcription: createdTicket.call_transcription || {},
-              created_at: createdTicket.created_at || new Date()
-            };
-
-            const qaResponse = await fetch(qaRobocallUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(qaPayload),
-            });
-
-            if (qaResponse.ok) {
-              const qaResult = await qaResponse.json();
-              console.log("Successfully triggered QA robocall for ticket:", createdTicket.ticket_number, "Result:", qaResult);
-              // Update the robocall ticket with the evaluation result
-              await robocallTicketsCollection.updateOne(
-                { _id: createdTicket._id },
-                { $set: { eval: qaResult.evaluation_result, updated_at: new Date() } }
-              );
-              console.log(`Updated robocall ticket ${createdTicket.ticket_number} with QA evaluation result.`);
-            } else {
-              const errorText = await qaResponse.text();
-              console.error("Failed to trigger QA robocall for ticket:", createdTicket.ticket_number, "Error:", errorText);
-            }
+            // Trigger QA robocall in the background (non-blocking)
+            triggerQaRobocall(
+              createdTicket.ticket_number,
+              createdTicket.call_transcription?.data?.agent_id,
+              createdTicket.call_transcription?.data?.conversation_id
+            );
           }
         } catch (ticketErr) {
           console.error("Failed to create or trigger QA robocall ticket:", ticketErr);
@@ -624,6 +598,20 @@ app.post(
                   },
                   received_at: new Date()
                 });
+
+                // Upsert ticket in robocallTicketsCollection to include audio_url
+                await robocallTicketsCollection.updateOne(
+                  {
+                    "call_transcription.data.agent_id": agent_id,
+                    "call_transcription.data.conversation_id": conversation_id
+                  },
+                  {
+                    $set: {
+                      "call_transcription.data.audio_url": fileUrl
+                    }
+                  },
+                  { upsert: true }
+                );
               } catch (mongoErr) {
                 console.error("Failed to store post_call_audio metadata in MongoDB:", mongoErr);
                 // Still return success for audio upload, but log the DB error
@@ -720,6 +708,166 @@ app.get("/api/signed-url/:slug", async (req, res) => {
   } catch (err) {
     console.error("Error generating signed URL:", err);
     res.status(500).json({ error: err.message || "Failed to generate signed URL" });
+  }
+});
+
+/**
+ * @openapi
+ * /api/upload-mp3:
+ *   post:
+ *     summary: Upload an mp3 file, generate agent_id and conversation_id, and store in COS bucket.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       200:
+ *         description: File uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 agent_id:
+ *                   type: string
+ *                 conversation_id:
+ *                   type: string
+ *                 url:
+ *                   type: string
+ *       400:
+ *         description: Invalid input
+ *       500:
+ *         description: Server error
+ */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    // Accept any audio file
+    if (!file.mimetype.startsWith("audio/")) {
+      return cb(new Error("Only audio files are allowed"));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 20 * 1024 * 1024 } // 20MB max
+});
+
+/**
+ * Trigger QA robocall in the background (non-blocking)
+ * @param {string} ticket_number
+ * @param {string} agent_id
+ * @param {string} conversation_id
+ */
+function triggerQaRobocall(ticket_number, agent_id, conversation_id) {
+  (async () => {
+    try {
+      // const qaRobocallUrl = "https://1bbmxz17-8000.asse.devtunnels.ms/trigger_qa_robocall";
+      const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
+      const qaPayload = {
+        ticket_number,
+        agent_id,
+        conversation_id
+      };
+      await fetch(qaRobocallUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(qaPayload),
+      });
+    } catch (qaErr) {
+      console.error("Failed to trigger QA robocall after upload-audio:", qaErr);
+    }
+  })();
+}
+
+app.post("/api/upload-audio", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+    // Generate agent_id and conversation_id with required prefixes
+    const agent_id = "agent_upload_audio_qa";
+    const conversation_id = "conv_" + uuidv4().replace(/-/g, "").slice(0, 24);
+
+    // Get file extension from original name or mimetype
+    let ext = "";
+    if (req.file.originalname && req.file.originalname.includes(".")) {
+      ext = req.file.originalname.substring(req.file.originalname.lastIndexOf("."));
+    } else if (req.file.mimetype) {
+      // fallback: map common audio mimetypes to extension
+      const mimeMap = {
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/x-pn-wav": ".wav",
+        "audio/webm": ".webm",
+        "audio/ogg": ".ogg",
+        "audio/x-flac": ".flac",
+        "audio/flac": ".flac"
+      };
+      ext = mimeMap[req.file.mimetype] || "";
+    }
+    if (!ext) ext = ".audio"; // fallback
+
+    const key = `audio-call/${agent_id}/${conversation_id}${ext}`;
+
+    cos.putObject(
+      {
+        Bucket: COS_BUCKET,
+        Region: COS_REGION,
+        Key: key,
+        Body: req.file.buffer,
+        ContentType: req.file.mimetype,
+      },
+      (err, data) => {
+        if (err) {
+          console.error("COS upload error:", err);
+          return res.status(500).json({ error: "Failed to upload file to COS", details: err });
+        }
+        const fileUrl = `https://${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com/${key}`;
+
+        // After successful upload, generate ticket and store in DB
+        (async () => {
+          try {
+            const ticket_number = await generateUniqueTicketNumber(robocallTicketsCollection);
+            await robocallTicketsCollection.insertOne({
+              ticket_number,
+              call_transcription: {
+                data: {
+                  agent_id,
+                  conversation_id,
+                  audio_url: fileUrl
+                }
+              }
+            });
+
+            // Trigger QA robocall in the background (non-blocking)
+            triggerQaRobocall(ticket_number, agent_id, conversation_id);
+
+            res.status(200).json({
+              agent_id,
+              conversation_id,
+              url: fileUrl,
+              extension: ext,
+              ticket_number
+            });
+          } catch (ticketErr) {
+            console.error("Error creating ticket after audio upload:", ticketErr);
+            res.status(500).json({ error: "Audio uploaded but failed to create ticket", details: ticketErr });
+          }
+        })();
+      }
+    );
+  } catch (err) {
+    console.error("Error in /api/upload-audio-call:", err);
+    res.status(500).json({ error: "Server error" });
   }
 });
 
