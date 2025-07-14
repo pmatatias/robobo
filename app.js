@@ -1,13 +1,26 @@
 import express from "express";
 import { MongoClient } from "mongodb";
 import dotenv from "dotenv";
+import path from "path";
 import swaggerUi from "swagger-ui-express";
 import swaggerJSDoc from "swagger-jsdoc";
 import cors from "cors";
 import crypto from "crypto";
 import bodyParser from "body-parser";
+import COS from "cos-nodejs-sdk-v5";
+import multer from "multer";
+import { v4 as uuidv4 } from "uuid";
 
+console.log("Loading .env from", path.resolve(".env"));
 dotenv.config();
+
+// === Tencent COS setup ===
+const cos = new COS({
+  SecretId: process.env.TENCENT_COS_SECRET_ID,
+  SecretKey: process.env.TENCENT_COS_SECRET_KEY,
+});
+const COS_BUCKET = process.env.TENCENT_COS_BUCKET; 
+const COS_REGION = process.env.TENCENT_COS_REGION; 
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -39,12 +52,12 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb+srv://<username>:<passwo
 const DB_NAME = process.env.DB_NAME || "robocall_db";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "assistants";
 
-let db, assistantsCollection, ticketsCollection, postcallTranscriptionsCollection, robocallTicketsCollection;
+let db, assistantsCollection, postcallCollection, robocallTicketsCollection;
 
 /**
  * Connect to MongoDB once at startup
  * Also set up the tickets collection
- * Also set up the postcall transcriptions collection
+ * Also set up the postcall collection
  * Also set up the robocall_tickets collection
  */
 async function connectToMongo() {
@@ -52,8 +65,7 @@ async function connectToMongo() {
   await client.connect();
   db = client.db(DB_NAME);
   assistantsCollection = db.collection(COLLECTION_NAME);
-  ticketsCollection = db.collection("tickets");
-  postcallTranscriptionsCollection = db.collection("postcall_transcriptions");
+  postcallCollection = db.collection("postcall");
   robocallTicketsCollection = db.collection("robocall_tickets");
   console.log("Connected to MongoDB");
 }
@@ -62,215 +74,6 @@ connectToMongo().catch((err) => {
   process.exit(1);
 });
 
-/**
- * @openapi
- * /api/agent-id:
- *   get:
- *     summary: List all assistants
- *     responses:
- *       200:
- *         description: Array of assistants
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
- *                     type: string
- *                   slug:
- *                     type: string
- *                   agent_id:
- *                     type: string
- */
-app.get("/api/agent-id", async (req, res) => {
-  try {
-    const assistants = await assistantsCollection.find({ disabled: { $ne: true } }).toArray();
-    res.json(assistants.map(({ name, slug, agent_id }) => ({ name, slug, agent_id })));
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * @openapi
- * /api/admin/agent-id:
- *   get:
- *     summary: List all assistants including disabled ones (for admin purposes)
- *     responses:
- *       200:
- *         description: Array of all assistants
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
- *                     type: string
- *                   slug:
- *                     type: string
- *                   agent_id:
- *                     type: string
- *                   disabled:
- *                     type: boolean
- */
-app.get("/api/admin/agent-id", async (req, res) => {
-  try {
-    const assistants = await assistantsCollection.find({}).toArray();
-    res.json(assistants.map(({ name, slug, agent_id, disabled }) => ({ name, slug, agent_id, disabled: !!disabled })));
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * @openapi
- * /api/agent-id/{slug}:
- *   get:
- *     summary: Fetch assistant by slug
- *     parameters:
- *       - in: path
- *         name: slug
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Assistant found
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 agent_id:
- *                   type: string
- *                 name:
- *                   type: string
- *       404:
- *         description: Assistant not found
- */
-app.get("/api/agent-id/:slug", async (req, res) => {
-  const { slug } = req.params;
-  try {
-    const assistant = await assistantsCollection.findOne({ slug });
-    if (!assistant) {
-      return res.status(404).json({ error: "Assistant not found" });
-    }
-    if (assistant.disabled) {
-      return res.status(403).json({ error: "Assistant disabled" });
-    }
-    res.json({
-      agent_id: assistant.agent_id,
-      name: assistant.name
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * @openapi
- * /api/agent-id:
- *   post:
- *     summary: Create a new assistant
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - name
- *               - slug
- *               - agent_id
- *             properties:
- *               name:
- *                 type: string
- *               slug:
- *                 type: string
- *               agent_id:
- *                 type: string
- *     responses:
- *       201:
- *         description: Assistant created
- *       409:
- *         description: Assistant with this slug already exists
- */
-app.post("/api/agent-id", express.json(), async (req, res) => {
-  const { name, slug, agent_id, disabled } = req.body;
-  if (!name || !slug || !agent_id) {
-    return res.status(400).json({ error: "Missing required fields: name, slug, agent_id" });
-  }
-  try {
-    // Check for duplicate slug
-    const exists = await assistantsCollection.findOne({ slug });
-    if (exists) {
-      return res.status(409).json({ error: "Assistant with this slug already exists" });
-    }
-    const result = await assistantsCollection.insertOne({ name, slug, agent_id, disabled: !!disabled });
-    res.status(201).json({ message: "Assistant created", id: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * @openapi
- * /api/agent-id/{slug}:
- *   put:
- *     summary: Update an existing assistant by slug
- *     parameters:
- *       - in: path
- *         name: slug
- *         required: true
- *         schema:
- *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               name:
- *                 type: string
- *               agent_id:
- *                 type: string
- *     responses:
- *       200:
- *         description: Assistant updated
- *       404:
- *         description: Assistant not found
- */
-app.put("/api/agent-id/:slug", express.json(), async (req, res) => {
-  const { slug } = req.params;
-  const { name, agent_id, disabled } = req.body;
-  if (!name && !agent_id && typeof disabled === "undefined") {
-    return res.status(400).json({ error: "At least one of name, agent_id, or disabled must be provided" });
-  }
-  try {
-    const update = {};
-    if (name) update.name = name;
-    if (agent_id) update.agent_id = agent_id;
-    if (typeof disabled !== "undefined") update.disabled = !!disabled;
-    const result = await assistantsCollection.updateOne(
-      { slug },
-      { $set: update }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: "Assistant not found" });
-    }
-    if (typeof disabled !== "undefined" && !!disabled === true) {
-      return res.json({ message: "Assistant disabled" });
-    }
-    res.json({ message: "Assistant updated" });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
 /**
  * @openapi
@@ -314,147 +117,6 @@ async function generateUniqueTicketNumber(collection) {
   if (exists) throw new Error("Failed to generate unique ticket number");
   return ticket_number;
 }
-
-/**
- * Generate a unique 6-character alphanumeric ticket number for ticketsCollection
- */
-async function generateTicketNumber() {
-  return generateUniqueTicketNumber(ticketsCollection);
-}
-
-
-app.post("/webhook/ticket", express.json(), async (req, res) => {
-  const { subject, description, priority, customer_name, agent_id, status } = req.body;
-  if (!subject) {
-    return res.status(400).json({ error: "Missing required field: subject" });
-  }
-  try {
-    const ticket_number = await generateTicketNumber();
-    const ticket = {
-      ticket_number,
-      subject,
-      status: ticket.status || "open",
-      description: description || "",
-      priority: priority || "normal",
-      customer_name: customer_name || "",
-      agent_id: agent_id || "",
-      created_at: new Date()
-    };
-    const result = await ticketsCollection.insertOne(ticket);
-    res.status(201).json({ message: "Ticket created", ticket_number, id: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * POST /webhook/ticket/status
- * Body: { ticket_number: string }
- * Returns: ticket status and details
- */
-app.post("/webhook/ticket/status", express.json(), async (req, res) => {
-  const { ticket_number, agent_id } = req.body;
-  if (!ticket_number) {
-    return res.status(400).json({ error: "Missing required field: ticket_number" });
-  }
-  try {
-    const query = { ticket_number };
-    if (agent_id) query.agent_id = agent_id;
-    const ticket = await ticketsCollection.findOne(query);
-    if (!ticket) {
-      return res.status(404).json({ error: "Ticket not found" });
-    }
-    res.json({
-      ticket_number: ticket.ticket_number,
-      status: ticket.status || "open",
-      subject: ticket.subject,
-      description: ticket.description,
-      priority: ticket.priority,
-      customer_name: ticket.customer_name,
-      agent_id: ticket.agent_id || "",
-      created_at: ticket.created_at
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * @openapi
- * /api/tickets:
- *   get:
- *     summary: Get list of all tickets
- *     parameters:
- *       - in: query
- *         name: agent_id
- *         schema:
- *           type: string
- *         required: false
- *         description: Filter tickets by agent_id
- *     responses:
- *       200:
- *         description: Array of tickets
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   ticket_number:
- *                     type: string
- *                   subject:
- *                     type: string
- *                   status:
- *                     type: string
- *                   description:
- *                     type: string
- *                   priority:
- *                     type: string
- *                   customer_name:
- *                     type: string
- *                   agent_id:
- *                     type: string
- *                   created_at:
- *                     type: string
- *                     format: date-time
- */
-app.get("/api/tickets", async (req, res) => {
-  try {
-    const { agent_id } = req.query;
-    const query = agent_id ? { agent_id } : {};
-    const tickets = await ticketsCollection.find(query).toArray();
-    res.json(tickets);
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-/**
- * POST /webhook/ticket/update-status
- * Body: { ticket_number: string, status: string }
- * Updates ticket status
- */
-app.post("/webhook/ticket/update-status", express.json(), async (req, res) => {
-  const { ticket_number, agent_id, status } = req.body;
-  if (!ticket_number || !status) {
-    return res.status(400).json({ error: "Missing required fields: ticket_number, status" });
-  }
-  try {
-    const query = { ticket_number };
-    if (agent_id) query.agent_id = agent_id;
-    const result = await ticketsCollection.updateOne(
-      query,
-      { $set: { status, updated_at: new Date() } }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: "Ticket not found" });
-    }
-    res.json({ message: "Ticket status updated", ticket_number, agent_id: agent_id || "", status });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
 /**
  * @openapi
@@ -674,23 +336,24 @@ app.post("/webhook/robocall-ticket", express.json(), async (req, res) => {
 
 /**
  * GET /api/robocall-tickets
- * Query param: agent_id (optional)
- * Returns all tickets, or those matching call_transcription.data.agent_id
+ * Query param: agent_id (optional), ticket_number (optional)
+ * Returns all tickets, or those matching call_transcription.data.agent_id or ticket_number
  */
 import { ObjectId } from "mongodb";
 
 app.get("/api/robocall-tickets", async (req, res) => {
   try {
-    let { agent_id } = req.query;
+    let { agent_id, ticket_number } = req.query;
     let query = {};
     if (agent_id) {
       // Support both flat and nested ticket structures
-      query = {
-        $or: [
-          { "call_transcription.data.agent_id": agent_id },
-          { agent_id }
-        ]
-      };
+      query.$or = [
+        { "call_transcription.data.agent_id": agent_id },
+        { agent_id }
+      ];
+    }
+    if (ticket_number) {
+      query.ticket_number = ticket_number;
     }
     const tickets = await robocallTicketsCollection.find(query).toArray();
     res.json(tickets);
@@ -760,6 +423,7 @@ app.post("/trigger_qa_robocall", express.json(), async (req, res) => {
   }
 
   try {
+    // const qaRobocallUrl = "https://1bbmxz17-8000.asse.devtunnels.ms/trigger_qa_robocall";
     const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
     const response = await fetch(qaRobocallUrl, {
       method: "POST",
@@ -794,13 +458,32 @@ app.post("/trigger_qa_robocall", express.json(), async (req, res) => {
 });
 
 
+/**
+ * GET /api/robocall-tickets/pending-eval
+ * Query: limit (default 100, max 1000), after_id (ObjectId as string)
+ * Returns a page of tickets where eval is null, sorted by _id ascending
+ */
+app.get("/api/robocall-tickets/pending-eval", async (req, res) => {
+  try {
+    let { limit } = req.query;
+    limit = Math.min(parseInt(limit) || 1000, 1000); // Default to 1000, max 1000
+    const query = { eval: null };
+    const tickets = await robocallTicketsCollection
+      .find(query)
+      .sort({ _id: 1 })
+      .limit(limit)
+      .toArray();
+    res.json({ tickets });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 app.post(
   "/webhook/elevenlabs/postcall",
-  bodyParser.raw({ type: "*/*" }),
+  bodyParser.raw({ type: "application/json", limit: "20mb" }),
   async (req, res) => {
-    // Debug: log entry and headers
     console.log("POST /webhook/elevenlabs/postcall called");
-    console.log("Headers:", req.headers);
     try {
       const secret = process.env.ELEVENLABS_WEBHOOK_SECRET;
       if (!secret) {
@@ -829,10 +512,12 @@ app.post(
       // Validate HMAC
       // Log raw body and message for debugging
       console.log("Raw body (hex):", req.body.toString("hex"));
-      const bodyString = req.body.toString("utf-8");
-      console.log("Body as utf-8 string:", bodyString);
-      const message = `${timestamp}.${bodyString}`;
-      console.log("HMAC message:", message);
+      // Use raw buffer for HMAC calculation
+      const message = Buffer.concat([
+        Buffer.from(timestamp + ".", "utf-8"),
+        req.body
+      ]);
+      // console.log("HMAC message (buffer):", message);
       // Masked secret info for debugging
       console.log("Secret info: length =", secret.length, "first char =", secret[0], "last char =", secret[secret.length-1]);
       const digest = "v0=" + crypto.createHmac("sha256", secret).update(message).digest("hex");
@@ -843,70 +528,106 @@ app.post(
       // Parse JSON
       let event;
       try {
+        const bodyString = req.body.toString("utf-8");
         event = JSON.parse(bodyString);
       } catch (e) {
-        console.error("Invalid JSON", bodyString);
+        console.error("Invalid JSON", req.body.toString("utf-8"));
         return res.status(400).json({ error: "Invalid JSON" });
       }
       console.log("Parsed event:", event);
-      // Only store post_call_transcription events in MongoDB.
-      if (event.type !== "post_call_transcription") {
+
+      // Handle both post_call_transcription and post_call_audio
+      if (event.type === "post_call_transcription") {
+        // Store in DB
+        const dbResult = await postcallCollection.insertOne({
+          ...event,
+          received_at: new Date()
+        });
+        console.log("Inserted post_call_transcription into DB:", dbResult.insertedId);
+
+        // Also create a robocall ticket (log errors but don't block webhook)
+        try {
+          const createdTicket = await create_robocall_ticket(event); // Get the created ticket's full document
+          if (createdTicket && createdTicket._id) {
+            // Trigger QA robocall in the background (non-blocking)
+            triggerQaRobocall(
+              createdTicket.ticket_number,
+              createdTicket.call_transcription?.data?.agent_id,
+              createdTicket.call_transcription?.data?.conversation_id
+            );
+          }
+        } catch (ticketErr) {
+          console.error("Failed to create or trigger QA robocall ticket:", ticketErr);
+        }
+
+        return res.status(200).json({ message: "post_call_transcription received and stored" });
+      } else if (event.type === "post_call_audio") {
+        // Handle audio: decode base64 and upload to COS
+        try {
+          const { agent_id, conversation_id, full_audio } = event.data || {};
+          const event_timestamp = event.event_timestamp;
+          if (!agent_id || !conversation_id || !full_audio) {
+            return res.status(400).json({ error: "Missing agent_id, conversation_id, or full_audio in post_call_audio" });
+          }
+          const audioBuffer = Buffer.from(full_audio, "base64");
+          const key = `audio-call/${agent_id}/${conversation_id}.mp3`;
+          cos.putObject(
+            {
+              Bucket: COS_BUCKET,
+              Region: COS_REGION,
+              Key: key,
+              Body: audioBuffer,
+              ContentType: "audio/mpeg",
+            },
+            async (err, data) => {
+              if (err) {
+                console.error("COS upload error:", err);
+                return res.status(500).json({ error: "Failed to upload audio to COS", details: err });
+              }
+              // Success
+              const fileUrl = `https://${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com/${key}`;
+              // Store metadata in MongoDB
+              try {
+                await postcallCollection.insertOne({
+                  type: "post_call_audio",
+                  event_timestamp,
+                  data: {
+                    agent_id,
+                    conversation_id,
+                    audio_url: fileUrl
+                  },
+                  received_at: new Date()
+                });
+
+                // Upsert ticket in robocallTicketsCollection to include audio_url
+                await robocallTicketsCollection.updateOne(
+                  {
+                    "call_transcription.data.agent_id": agent_id,
+                    "call_transcription.data.conversation_id": conversation_id
+                  },
+                  {
+                    $set: {
+                      "call_transcription.data.audio_url": fileUrl
+                    }
+                  },
+                  { upsert: true }
+                );
+              } catch (mongoErr) {
+                console.error("Failed to store post_call_audio metadata in MongoDB:", mongoErr);
+                // Still return success for audio upload, but log the DB error
+              }
+              res.status(200).json({ message: "Audio uploaded", url: fileUrl });
+            }
+          );
+        } catch (err) {
+          console.error("Error handling post_call_audio:", err);
+          return res.status(500).json({ error: "Server error handling post_call_audio" });
+        }
+      } else {
         // Per ElevenLabs docs: always return 200 for valid, authenticated requests, even if event type is ignored.
-        console.log("Webhook event type ignored (not post_call_transcription):", event.type);
+        console.log("Webhook event type ignored:", event.type);
         return res.status(200).json({ message: "Event type ignored" });
       }
-      // Store in DB
-      const dbResult = await postcallTranscriptionsCollection.insertOne({
-        ...event,
-        received_at: new Date()
-      });
-      console.log("Inserted post_call_transcription into DB:", dbResult.insertedId);
-
-      // Also create a robocall ticket (log errors but don't block webhook)
-      try {
-        const createdTicket = await create_robocall_ticket(event); // Get the created ticket's full document
-        if (createdTicket && createdTicket._id) {
-          const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
-          const qaPayload = {
-            _id: { "$oid": createdTicket._id.toHexString() },
-            ticket_number: createdTicket.ticket_number,
-            ticket_status: createdTicket.ticket_status || "closed",
-            subject: createdTicket.subject || "",
-            category: createdTicket.category || "",
-            customer_name: createdTicket.customer_name || "",
-            priority: createdTicket.priority || "low",
-            eval: createdTicket.eval || null,
-            call_transcription: createdTicket.call_transcription || {},
-            created_at: createdTicket.created_at || new Date()
-          };
-
-          const qaResponse = await fetch(qaRobocallUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(qaPayload),
-          });
-
-          if (qaResponse.ok) {
-            const qaResult = await qaResponse.json();
-            console.log("Successfully triggered QA robocall for ticket:", createdTicket.ticket_number, "Result:", qaResult);
-            // Update the robocall ticket with the evaluation result
-            await robocallTicketsCollection.updateOne(
-              { _id: createdTicket._id },
-              { $set: { eval: qaResult.evaluation_result, updated_at: new Date() } }
-            );
-            console.log(`Updated robocall ticket ${createdTicket.ticket_number} with QA evaluation result.`);
-          } else {
-            const errorText = await qaResponse.text();
-            console.error("Failed to trigger QA robocall for ticket:", createdTicket.ticket_number, "Error:", errorText);
-          }
-        }
-      } catch (ticketErr) {
-        console.error("Failed to create or trigger QA robocall ticket:", ticketErr);
-      }
-
-      return res.status(200).json({ message: "Webhook received and stored" });
     } catch (err) {
       console.error("Error in webhook handler:", err);
       return res.status(500).json({ error: "Server error" });
@@ -915,29 +636,240 @@ app.post(
 );
 
 
+
 /**
- * GET /api/robocall-tickets/pending-eval
- * Query: limit (default 100, max 1000), after_id (ObjectId as string)
- * Returns a page of tickets where eval is null, sorted by _id ascending
+ * @openapi
+ * /api/signed-url/{slug}:
+ *   get:
+ *     summary: Get a signed URL for an assistant by slug (for ElevenLabs)
+ *     parameters:
+ *       - in: path
+ *         name: slug
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Signed URL and assistant info
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 signedUrl:
+ *                   type: string
+ *                 name:
+ *                   type: string
+ *                 calling_page_enable:
+ *                   type: boolean
+ *       404:
+ *         description: Assistant not found
+ *       403:
+ *         description: Assistant disabled
+ *       500:
+ *         description: Error generating signed URL
  */
-app.get("/api/robocall-tickets/pending-eval", async (req, res) => {
+app.get("/api/signed-url/:slug", async (req, res) => {
+  const { slug } = req.params;
   try {
-    let { limit } = req.query;
-    limit = Math.min(parseInt(limit) || 1000, 1000); // Default to 1000, max 1000
-    const query = { eval: null };
-    const tickets = await robocallTicketsCollection
-      .find(query)
-      .sort({ _id: 1 })
-      .limit(limit)
-      .toArray();
-    res.json({ tickets });
+    const assistant = await assistantsCollection.findOne({ slug });
+    console.log("Assistant retrieved from DB:", assistant); // Debugging line
+    if (!assistant) {
+      return res.status(404).json({ error: "Assistant not found" });
+    }
+    if (assistant.disabled || assistant.calling_page_enable === false) {
+      return res.status(403).json({ error: "Assistant disabled" });
+    }
+    if (!assistant.agent_id || !assistant.apiKey) {
+      console.error("Missing agent_id or apiKey for assistant:", assistant); // Debugging line
+      return res.status(500).json({ error: "Missing agent_id or apiKey for this assistant" });
+    }
+    // Request signed URL from ElevenLabs
+    const fetch = (await import("node-fetch")).default;
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${assistant.agent_id}`,
+      {
+        method: "GET",
+        headers: {
+          "xi-api-key": assistant.apiKey,
+        },
+      }
+    );
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to get signed URL from ElevenLabs: ${response.status} - ${errorText}`);
+    }
+    const data = await response.json();
+    res.json({
+      signedUrl: data.signed_url,
+      name: assistant.name,
+      calling_page_enable: assistant.calling_page_enable
+    });
   } catch (err) {
-    res.status(500).json({ error: "Server error" });
+    console.error("Error generating signed URL:", err);
+    res.status(500).json({ error: err.message || "Failed to generate signed URL" });
   }
 });
 
+/**
+ * @openapi
+ * /api/upload-mp3:
+ *   post:
+ *     summary: Upload an mp3 file, generate agent_id and conversation_id, and store in COS bucket.
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ *     responses:
+ *       200:
+ *         description: File uploaded successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 agent_id:
+ *                   type: string
+ *                 conversation_id:
+ *                   type: string
+ *                 url:
+ *                   type: string
+ *       400:
+ *         description: Invalid input
+ *       500:
+ *         description: Server error
+ */
+const upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    // Accept any audio file
+    if (!file.mimetype.startsWith("audio/")) {
+      return cb(new Error("Only audio files are allowed"));
+    }
+    cb(null, true);
+  },
+  limits: { fileSize: 20 * 1024 * 1024 } // 20MB max
+});
 
+/**
+ * Trigger QA robocall in the background (non-blocking)
+ * @param {string} ticket_number
+ * @param {string} agent_id
+ * @param {string} conversation_id
+ */
+function triggerQaRobocall(ticket_number, agent_id, conversation_id) {
+  (async () => {
+    try {
+      // const qaRobocallUrl = "https://1bbmxz17-8000.asse.devtunnels.ms/trigger_qa_robocall";
+      const qaRobocallUrl = "https://qarobocall-production.up.railway.app/trigger_qa_robocall";
+      const qaPayload = {
+        ticket_number,
+        agent_id,
+        conversation_id
+      };
+      await fetch(qaRobocallUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(qaPayload),
+      });
+    } catch (qaErr) {
+      console.error("Failed to trigger QA robocall after upload-audio:", qaErr);
+    }
+  })();
+}
 
+app.post("/api/upload-audio", upload.single("file"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "No file uploaded" });
+    }
+    // Generate agent_id and conversation_id with required prefixes
+    const agent_id = "agent_upload_audio_qa";
+    const conversation_id = "conv_" + uuidv4().replace(/-/g, "").slice(0, 24);
+
+    // Get file extension from original name or mimetype
+    let ext = "";
+    if (req.file.originalname && req.file.originalname.includes(".")) {
+      ext = req.file.originalname.substring(req.file.originalname.lastIndexOf("."));
+    } else if (req.file.mimetype) {
+      // fallback: map common audio mimetypes to extension
+      const mimeMap = {
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/x-pn-wav": ".wav",
+        "audio/webm": ".webm",
+        "audio/ogg": ".ogg",
+        "audio/x-flac": ".flac",
+        "audio/flac": ".flac"
+      };
+      ext = mimeMap[req.file.mimetype] || "";
+    }
+    if (!ext) ext = ".audio"; // fallback
+
+    const key = `audio-call/${agent_id}/${conversation_id}${ext}`;
+
+    cos.putObject(
+      {
+        Bucket: COS_BUCKET,
+        Region: COS_REGION,
+        Key: key,
+        Body: req.file.buffer,
+        ContentType: req.file.mimetype,
+      },
+      (err, data) => {
+        if (err) {
+          console.error("COS upload error:", err);
+          return res.status(500).json({ error: "Failed to upload file to COS", details: err });
+        }
+        const fileUrl = `https://${COS_BUCKET}.cos.${COS_REGION}.myqcloud.com/${key}`;
+
+        // After successful upload, generate ticket and store in DB
+        (async () => {
+          try {
+            const ticket_number = await generateUniqueTicketNumber(robocallTicketsCollection);
+            await robocallTicketsCollection.insertOne({
+              ticket_number,
+              call_transcription: {
+                data: {
+                  agent_id,
+                  conversation_id,
+                  audio_url: fileUrl
+                }
+              }
+            });
+
+            // Trigger QA robocall in the background (non-blocking)
+            triggerQaRobocall(ticket_number, agent_id, conversation_id);
+
+            res.status(200).json({
+              agent_id,
+              conversation_id,
+              url: fileUrl,
+              extension: ext,
+              ticket_number
+            });
+          } catch (ticketErr) {
+            console.error("Error creating ticket after audio upload:", ticketErr);
+            res.status(500).json({ error: "Audio uploaded but failed to create ticket", details: ticketErr });
+          }
+        })();
+      }
+    );
+  } catch (err) {
+    console.error("Error in /api/upload-audio-call:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // === Start server ===
 app.listen(PORT, () => {
