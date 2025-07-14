@@ -62,215 +62,10 @@ connectToMongo().catch((err) => {
   process.exit(1);
 });
 
-/**
- * @openapi
- * /api/agent-id:
- *   get:
- *     summary: List all assistants
- *     responses:
- *       200:
- *         description: Array of assistants
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
- *                     type: string
- *                   slug:
- *                     type: string
- *                   agent_id:
- *                     type: string
- */
-app.get("/api/agent-id", async (req, res) => {
-  try {
-    const assistants = await assistantsCollection.find({ disabled: { $ne: true } }).toArray();
-    res.json(assistants.map(({ name, slug, agent_id }) => ({ name, slug, agent_id })));
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * @openapi
- * /api/admin/agent-id:
- *   get:
- *     summary: List all assistants including disabled ones (for admin purposes)
- *     responses:
- *       200:
- *         description: Array of all assistants
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   name:
- *                     type: string
- *                   slug:
- *                     type: string
- *                   agent_id:
- *                     type: string
- *                   disabled:
- *                     type: boolean
- */
-app.get("/api/admin/agent-id", async (req, res) => {
-  try {
-    const assistants = await assistantsCollection.find({}).toArray();
-    res.json(assistants.map(({ name, slug, agent_id, disabled }) => ({ name, slug, agent_id, disabled: !!disabled })));
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * @openapi
- * /api/agent-id/{slug}:
- *   get:
- *     summary: Fetch assistant by slug
- *     parameters:
- *       - in: path
- *         name: slug
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Assistant found
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 agent_id:
- *                   type: string
- *                 name:
- *                   type: string
- *       404:
- *         description: Assistant not found
- */
-app.get("/api/agent-id/:slug", async (req, res) => {
-  const { slug } = req.params;
-  try {
-    const assistant = await assistantsCollection.findOne({ slug });
-    if (!assistant) {
-      return res.status(404).json({ error: "Assistant not found" });
-    }
-    if (assistant.disabled) {
-      return res.status(403).json({ error: "Assistant disabled" });
-    }
-    res.json({
-      agent_id: assistant.agent_id,
-      name: assistant.name
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * @openapi
- * /api/agent-id:
- *   post:
- *     summary: Create a new assistant
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - name
- *               - slug
- *               - agent_id
- *             properties:
- *               name:
- *                 type: string
- *               slug:
- *                 type: string
- *               agent_id:
- *                 type: string
- *     responses:
- *       201:
- *         description: Assistant created
- *       409:
- *         description: Assistant with this slug already exists
- */
-app.post("/api/agent-id", express.json(), async (req, res) => {
-  const { name, slug, agent_id, disabled } = req.body;
-  if (!name || !slug || !agent_id) {
-    return res.status(400).json({ error: "Missing required fields: name, slug, agent_id" });
-  }
-  try {
-    // Check for duplicate slug
-    const exists = await assistantsCollection.findOne({ slug });
-    if (exists) {
-      return res.status(409).json({ error: "Assistant with this slug already exists" });
-    }
-    const result = await assistantsCollection.insertOne({ name, slug, agent_id, disabled: !!disabled });
-    res.status(201).json({ message: "Assistant created", id: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * @openapi
- * /api/agent-id/{slug}:
- *   put:
- *     summary: Update an existing assistant by slug
- *     parameters:
- *       - in: path
- *         name: slug
- *         required: true
- *         schema:
- *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               name:
- *                 type: string
- *               agent_id:
- *                 type: string
- *     responses:
- *       200:
- *         description: Assistant updated
- *       404:
- *         description: Assistant not found
- */
-app.put("/api/agent-id/:slug", express.json(), async (req, res) => {
-  const { slug } = req.params;
-  const { name, agent_id, disabled } = req.body;
-  if (!name && !agent_id && typeof disabled === "undefined") {
-    return res.status(400).json({ error: "At least one of name, agent_id, or disabled must be provided" });
-  }
-  try {
-    const update = {};
-    if (name) update.name = name;
-    if (agent_id) update.agent_id = agent_id;
-    if (typeof disabled !== "undefined") update.disabled = !!disabled;
-    const result = await assistantsCollection.updateOne(
-      { slug },
-      { $set: update }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: "Assistant not found" });
-    }
-    if (typeof disabled !== "undefined" && !!disabled === true) {
-      return res.json({ message: "Assistant disabled" });
-    }
-    res.json({ message: "Assistant updated" });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
 /**
  * @openapi
@@ -323,150 +118,10 @@ async function generateTicketNumber() {
 }
 
 
-app.post("/webhook/ticket", express.json(), async (req, res) => {
-  const { subject, description, priority, customer_name, agent_id, status } = req.body;
-  if (!subject) {
-    return res.status(400).json({ error: "Missing required field: subject" });
-  }
-  try {
-    const ticket_number = await generateTicketNumber();
-    const ticket = {
-      ticket_number,
-      subject,
-      status: ticket.status || "open",
-      description: description || "",
-      priority: priority || "normal",
-      customer_name: customer_name || "",
-      agent_id: agent_id || "",
-      created_at: new Date()
-    };
-    const result = await ticketsCollection.insertOne(ticket);
-    res.status(201).json({ message: "Ticket created", ticket_number, id: result.insertedId });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * POST /webhook/ticket/status
- * Body: { ticket_number: string }
- * Returns: ticket status and details
- */
-app.post("/webhook/ticket/status", express.json(), async (req, res) => {
-  const { ticket_number, agent_id } = req.body;
-  if (!ticket_number) {
-    return res.status(400).json({ error: "Missing required field: ticket_number" });
-  }
-  try {
-    const query = { ticket_number };
-    if (agent_id) query.agent_id = agent_id;
-    const ticket = await ticketsCollection.findOne(query);
-    if (!ticket) {
-      return res.status(404).json({ error: "Ticket not found" });
-    }
-    res.json({
-      ticket_number: ticket.ticket_number,
-      status: ticket.status || "open",
-      subject: ticket.subject,
-      description: ticket.description,
-      priority: ticket.priority,
-      customer_name: ticket.customer_name,
-      agent_id: ticket.agent_id || "",
-      created_at: ticket.created_at
-    });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * @openapi
- * /api/tickets:
- *   get:
- *     summary: Get list of all tickets
- *     parameters:
- *       - in: query
- *         name: agent_id
- *         schema:
- *           type: string
- *         required: false
- *         description: Filter tickets by agent_id
- *       - in: query
- *         name: ticket_number
- *         schema:
- *           type: string
- *         required: false
- *         description: Filter tickets by ticket_number
- *     responses:
- *       200:
- *         description: Array of tickets
- *         content:
- *           application/json:
- *             schema:
- *               type: array
- *               items:
- *                 type: object
- *                 properties:
- *                   ticket_number:
- *                     type: string
- *                   subject:
- *                     type: string
- *                   status:
- *                     type: string
- *                   description:
- *                     type: string
- *                   priority:
- *                     type: string
- *                   customer_name:
- *                     type: string
- *                   agent_id:
- *                     type: string
- *                   created_at:
- *                     type: string
- *                     format: date-time
- */
-app.get("/api/tickets", async (req, res) => {
-  try {
-    const { agent_id, ticket_number } = req.query;
-    const query = {};
-    if (agent_id) {
-      query.agent_id = agent_id;
-    }
-    if (ticket_number) {
-      query.ticket_number = ticket_number;
-    }
-    const tickets = await ticketsCollection.find(query).toArray();
-    res.json(tickets);
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
-/**
- * POST /webhook/ticket/update-status
- * Body: { ticket_number: string, status: string }
- * Updates ticket status
- */
-app.post("/webhook/ticket/update-status", express.json(), async (req, res) => {
-  const { ticket_number, agent_id, status } = req.body;
-  if (!ticket_number || !status) {
-    return res.status(400).json({ error: "Missing required fields: ticket_number, status" });
-  }
-  try {
-    const query = { ticket_number };
-    if (agent_id) query.agent_id = agent_id;
-    const result = await ticketsCollection.updateOne(
-      query,
-      { $set: { status, updated_at: new Date() } }
-    );
-    if (result.matchedCount === 0) {
-      return res.status(404).json({ error: "Ticket not found" });
-    }
-    res.json({ message: "Ticket status updated", ticket_number, agent_id: agent_id || "", status });
-  } catch (err) {
-    res.status(500).json({ error: "Server error" });
-  }
-});
+
 
 /**
  * @openapi
@@ -951,6 +606,80 @@ app.get("/api/robocall-tickets/pending-eval", async (req, res) => {
 
 
 
+
+/**
+ * @openapi
+ * /api/signed-url/{slug}:
+ *   get:
+ *     summary: Get a signed URL for an assistant by slug (for ElevenLabs)
+ *     parameters:
+ *       - in: path
+ *         name: slug
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Signed URL and assistant info
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 signedUrl:
+ *                   type: string
+ *                 name:
+ *                   type: string
+ *                 calling_page_enable:
+ *                   type: boolean
+ *       404:
+ *         description: Assistant not found
+ *       403:
+ *         description: Assistant disabled
+ *       500:
+ *         description: Error generating signed URL
+ */
+app.get("/api/signed-url/:slug", async (req, res) => {
+  const { slug } = req.params;
+  try {
+    const assistant = await assistantsCollection.findOne({ slug });
+    console.log("Assistant retrieved from DB:", assistant); // Debugging line
+    if (!assistant) {
+      return res.status(404).json({ error: "Assistant not found" });
+    }
+    if (assistant.disabled || assistant.calling_page_enable === false) {
+      return res.status(403).json({ error: "Assistant disabled" });
+    }
+    if (!assistant.agent_id || !assistant.apiKey) {
+      console.error("Missing agent_id or apiKey for assistant:", assistant); // Debugging line
+      return res.status(500).json({ error: "Missing agent_id or apiKey for this assistant" });
+    }
+    // Request signed URL from ElevenLabs
+    const fetch = (await import("node-fetch")).default;
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversation/get-signed-url?agent_id=${assistant.agent_id}`,
+      {
+        method: "GET",
+        headers: {
+          "xi-api-key": assistant.apiKey,
+        },
+      }
+    );
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`Failed to get signed URL from ElevenLabs: ${response.status} - ${errorText}`);
+    }
+    const data = await response.json();
+    res.json({
+      signedUrl: data.signed_url,
+      name: assistant.name,
+      calling_page_enable: assistant.calling_page_enable
+    });
+  } catch (err) {
+    console.error("Error generating signed URL:", err);
+    res.status(500).json({ error: err.message || "Failed to generate signed URL" });
+  }
+});
 
 // === Start server ===
 app.listen(PORT, () => {
