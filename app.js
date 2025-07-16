@@ -343,7 +343,7 @@ import { ObjectId } from "mongodb";
 
 app.get("/api/robocall-tickets", async (req, res) => {
   try {
-    let { agent_id, ticket_number } = req.query;
+    let { agent_id, ticket_number, sort } = req.query;
     let query = {};
     if (agent_id) {
       // Support both flat and nested ticket structures
@@ -355,7 +355,18 @@ app.get("/api/robocall-tickets", async (req, res) => {
     if (ticket_number) {
       query.ticket_number = ticket_number;
     }
-    const tickets = await robocallTicketsCollection.find(query).toArray();
+
+    // Default sort: most recent first (created_at desc, fallback to _id desc)
+    let sortObj = { created_at: -1, _id: -1 };
+    if (sort) {
+      // Support sort=field:asc or sort=field:desc
+      const [field, dir] = sort.split(":");
+      if (field) {
+        sortObj = { [field]: dir === "asc" ? 1 : -1 };
+      }
+    }
+
+    const tickets = await robocallTicketsCollection.find(query).sort(sortObj).toArray();
     res.json(tickets);
   } catch (err) {
     res.status(500).json({ error: "Server error" });
